@@ -119,10 +119,19 @@ function renderRecentRequests(){
 
 function openRecentRequest(id){switchDashboardTab('logs',true);selReq(id)}
 
+async function readApiPayload(resp){
+  const text=await resp.text();
+  if(!text)return {};
+  try{return JSON.parse(text)}catch{
+    return {message:text.replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').trim()||('HTTP '+resp.status)}
+  }
+}
+
 async function loadConfig(){
   const resp=await fetch(adminAuthQ('/api/admin/config'));
   if(resp.status===401||resp.status===403){localStorage.removeItem('cursor2api_token');window.location.href=adminUrl(dashboardTab);return}
-  const payload=await resp.json();
+  const payload=await readApiPayload(resp);
+  if(!resp.ok)throw new Error(payload.message||'后台配置接口返回错误。');
   configData=payload.config;configMeta=payload.meta;configErrors={};
   renderAlerts();renderOverview();renderConfig();updateSaveState();
 }
@@ -197,7 +206,7 @@ async function saveConfig(){
   const payload=serializeConfigForm();
   const resp=await fetch(adminAuthQ('/api/admin/config'),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({config:payload})});
   if(resp.status===401||resp.status===403){localStorage.removeItem('cursor2api_token');window.location.href=adminUrl('config');return}
-  const data=await resp.json();
+  const data=await readApiPayload(resp);
   if(!resp.ok){configData=payload;configErrors=data.errors||{};renderConfig();updateSaveState();showAdminToast(data.message||'保存失败，请检查配置。','error');return}
   configData=data.config;configMeta=data.meta;configErrors={};configDirty=false;saveState='saved';renderAlerts();renderOverview();renderConfig();updateSaveState();showAdminToast((data.changes&&data.changes.length?('已保存，'+data.changes.length+' 项变更。'):'配置已保存。')+(data.requiresRestart?' 端口变更需要重启服务。':''),'success');
 }
@@ -211,4 +220,4 @@ document.getElementById('configGroups').addEventListener('input',e=>{const path=
 document.getElementById('configGroups').addEventListener('change',e=>{const path=e.target.getAttribute('data-config-path');if(path)markConfigDirty(path)});
 window.addEventListener('popstate',()=>switchDashboardTab(new URLSearchParams(window.location.search).get('tab'),false));
 
-loadConfig().then(()=>switchDashboardTab(dashboardTab,false)).catch(err=>{console.error(err);showAdminToast('后台配置加载失败。','error')});
+loadConfig().then(()=>switchDashboardTab(dashboardTab,false)).catch(err=>{console.error(err);showAdminToast(err?.message||'后台配置加载失败。','error')});

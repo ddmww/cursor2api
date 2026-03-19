@@ -1,5 +1,5 @@
 import type { NextFunction, Request, Response } from 'express';
-import { copyFileSync, existsSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { parseDocument } from 'yaml';
@@ -236,10 +236,21 @@ function getDefaultEditableConfig(): EditableYamlConfig {
     };
 }
 
+function getConfigSourcePath(): string | null {
+    if (existsSync(CONFIG_FILE_PATH)) return CONFIG_FILE_PATH;
+    if (existsSync(CONFIG_TEMPLATE_PATH)) return CONFIG_TEMPLATE_PATH;
+    return null;
+}
+
+function createConfigDocument() {
+    const sourcePath = getConfigSourcePath();
+    if (!sourcePath) return parseDocument('');
+    return parseDocument(readFileSync(sourcePath, 'utf-8'));
+}
+
 function readEditableConfigFile(): { config: EditableYamlConfig; fileExists: boolean } {
     const fallback = getDefaultEditableConfig();
-    const sourcePath = existsSync(CONFIG_FILE_PATH) ? CONFIG_FILE_PATH : CONFIG_TEMPLATE_PATH;
-    const raw = asObject(parseDocument(readFileSync(sourcePath, 'utf-8')).toJSON());
+    const raw = asObject(createConfigDocument().toJSON());
 
     const thinking = asObject(raw.thinking);
     const compression = asObject(raw.compression);
@@ -320,6 +331,9 @@ function buildWarnings(fileExists: boolean): string[] {
     const warnings: string[] = [];
     if (!fileExists) {
         warnings.push('config.yaml 当前不存在，首次保存将基于 config.yaml.example 生成。');
+    }
+    if (!existsSync(CONFIG_TEMPLATE_PATH)) {
+        warnings.push('config.yaml.example 当前不存在，后台将使用内置默认配置生成新文件。');
     }
     if (!getConfig().authTokens?.length) {
         warnings.push('当前未配置 auth_tokens。后台和 API 在公网暴露时存在明显风险。');
@@ -472,8 +486,8 @@ function validateConfig(input: unknown): { config?: EditableYamlConfig; errors: 
 }
 
 function writeEditableConfig(config: EditableYamlConfig): void {
-    const sourcePath = existsSync(CONFIG_FILE_PATH) ? CONFIG_FILE_PATH : CONFIG_TEMPLATE_PATH;
-    const doc = parseDocument(readFileSync(sourcePath, 'utf-8'));
+    const doc = createConfigDocument();
+    mkdirSync(dirname(CONFIG_FILE_PATH), { recursive: true });
 
     doc.setIn(['port'], config.port);
     doc.setIn(['timeout'], config.timeout);
@@ -522,11 +536,19 @@ function writeEditableConfig(config: EditableYamlConfig): void {
 }
 
 export function apiGetAdminConfig(_req: Request, res: Response): void {
-    const { config, fileExists } = readEditableConfigFile();
-    res.json({
-        config,
-        meta: buildConfigMeta(fileExists),
-    });
+    try {
+        const { config, fileExists } = readEditableConfigFile();
+        res.json({
+            config,
+            meta: buildConfigMeta(fileExists),
+        });
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            message: '读取配置失败',
+            error: error instanceof Error ? error.message : String(error),
+        });
+    }
 }
 
 export function apiPutAdminConfig(req: Request, res: Response): void {

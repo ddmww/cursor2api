@@ -35,6 +35,7 @@ COPY --from=builder --chown=cursor:nodejs /app/dist ./dist
 
 # 拷贝前端静态资源（日志查看器 Web UI）
 COPY --chown=cursor:nodejs public ./public
+COPY --chown=cursor:nodejs config.yaml.example ./config.yaml.example
 
 # 创建可持久化数据目录并授权
 RUN mkdir -p /app/data/logs && chown -R cursor:nodejs /app/data
