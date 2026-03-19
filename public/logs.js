@@ -13,13 +13,14 @@ const PC={receive:'var(--blue)',convert:'var(--cyan)',send:'var(--purple)',respo
 const urlToken = new URLSearchParams(window.location.search).get('token');
 if (urlToken) localStorage.setItem('cursor2api_token', urlToken);
 const authToken = localStorage.getItem('cursor2api_token') || '';
+const dashboardBase = window.location.pathname === '/admin' ? '/admin' : '/logs';
 function authQ(base) { return authToken ? (base.includes('?') ? base + '&token=' : base + '?token=') + encodeURIComponent(authToken) : base; }
 function logoutBtn() {
   if (authToken) {
     const b = document.createElement('button');
     b.textContent = '退出';
     b.className = 'hdr-btn';
-    b.onclick = () => { localStorage.removeItem('cursor2api_token'); window.location.href = '/logs'; };
+    b.onclick = () => { localStorage.removeItem('cursor2api_token'); window.location.href = dashboardBase; };
     document.querySelector('.hdr-r').prepend(b);
   }
 }
@@ -28,7 +29,7 @@ function logoutBtn() {
 async function init(){
   try{
     const[a,b]=await Promise.all([fetch(authQ('/api/requests?limit=100')),fetch(authQ('/api/logs?limit=500'))]);
-    if (a.status === 401) { localStorage.removeItem('cursor2api_token'); window.location.href = '/logs'; return; }
+    if (a.status === 401) { localStorage.removeItem('cursor2api_token'); window.location.href = dashboardBase; return; }
     reqs=await a.json();logs=await b.json();rmap={};reqs.forEach(r=>rmap[r.requestId]=r);
     renderRL();updCnt();updStats();
     // 默认显示实时日志流

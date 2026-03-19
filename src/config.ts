@@ -2,6 +2,9 @@ import { readFileSync, existsSync, watch, type FSWatcher } from 'fs';
 import { parse as parseYaml } from 'yaml';
 import type { AppConfig } from './types.js';
 
+export const CONFIG_FILE_PATH = 'config.yaml';
+export const CONFIG_TEMPLATE_PATH = 'config.yaml.example';
+
 let config: AppConfig;
 let watcher: FSWatcher | null = null;
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -24,10 +27,10 @@ function parseYamlConfig(defaults: AppConfig): { config: AppConfig; raw: Record<
     const result = { ...defaults, fingerprint: { ...defaults.fingerprint } };
     let raw: Record<string, unknown> | null = null;
 
-    if (!existsSync('config.yaml')) return { config: result, raw };
+    if (!existsSync(CONFIG_FILE_PATH)) return { config: result, raw };
 
     try {
-        const content = readFileSync('config.yaml', 'utf-8');
+        const content = readFileSync(CONFIG_FILE_PATH, 'utf-8');
         const yaml = parseYaml(content);
         raw = yaml;
 
@@ -242,47 +245,54 @@ export function getConfig(): AppConfig {
  * 端口变更仅记录警告（需重启生效），其他字段下一次请求即生效。
  * 环境变量覆盖始终保持最高优先级，不受热重载影响。
  */
+function reloadConfigState(oldConfig: AppConfig): { config: AppConfig; changes: string[]; requiresRestart: boolean } {
+    const oldPort = oldConfig.port;
+
+    const defaults = defaultConfig();
+    const { config: newConfig } = parseYamlConfig(defaults);
+    applyEnvOverrides(newConfig);
+
+    const changes = detectChanges(oldConfig, newConfig);
+    const requiresRestart = newConfig.port !== oldPort;
+
+    if (requiresRestart) {
+        console.warn(`[Config] ⚠️  检测到 port 变更 (${oldPort} → ${newConfig.port})，端口变更需要重启服务才能生效`);
+        newConfig.port = oldPort;
+    }
+
+    config = newConfig;
+
+    return { config: newConfig, changes, requiresRestart };
+}
+
+export function reloadConfigFromDisk(): { config: AppConfig; changes: string[]; requiresRestart: boolean } {
+    const oldConfig = config ?? getConfig();
+    return reloadConfigState(oldConfig);
+}
+
 export function initConfigWatcher(): void {
     if (watcher) return; // 避免重复初始化
-    if (!existsSync('config.yaml')) {
+    if (!existsSync(CONFIG_FILE_PATH)) {
         console.log('[Config] config.yaml 不存在，跳过热重载监听');
         return;
     }
 
     const DEBOUNCE_MS = 500;
 
-    watcher = watch('config.yaml', (eventType) => {
+    watcher = watch(CONFIG_FILE_PATH, (eventType) => {
         if (eventType !== 'change') return;
 
         // 防抖：多次快速写入只触发一次重载
         if (debounceTimer) clearTimeout(debounceTimer);
         debounceTimer = setTimeout(() => {
             try {
-                if (!existsSync('config.yaml')) {
+                if (!existsSync(CONFIG_FILE_PATH)) {
                     console.warn('[Config] ⚠️  config.yaml 已被删除，保持当前配置');
                     return;
                 }
 
-                const oldConfig = config;
-                const oldPort = oldConfig.port;
-
-                // 重新解析 YAML + 环境变量覆盖
-                const defaults = defaultConfig();
-                const { config: newConfig } = parseYamlConfig(defaults);
-                applyEnvOverrides(newConfig);
-
-                // 检测变更
-                const changes = detectChanges(oldConfig, newConfig);
+                const { config: newConfig, changes } = reloadConfigState(config);
                 if (changes.length === 0) return; // 无实质变更
-
-                // ★ 端口变更特殊处理：仅警告，不生效
-                if (newConfig.port !== oldPort) {
-                    console.warn(`[Config] ⚠️  检测到 port 变更 (${oldPort} → ${newConfig.port})，端口变更需要重启服务才能生效`);
-                    newConfig.port = oldPort; // 保持原端口
-                }
-
-                // 替换全局配置对象（下一次 getConfig() 调用即返回新配置）
-                config = newConfig;
 
                 console.log(`[Config] 🔄 config.yaml 已热重载，${changes.length} 项变更:`);
                 changes.forEach(c => console.log(`  └─ ${c}`));

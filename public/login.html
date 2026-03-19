@@ -24,7 +24,7 @@ body{font-family:'Inter',sans-serif;background:linear-gradient(135deg,#e0e7ff 0%
 </head>
 <body>
 <div class="card">
-  <div class="logo"><h1>⚡ Cursor2API</h1><p>日志查看器需要验证身份</p></div>
+  <div class="logo"><h1>⚡ Cursor2API</h1><p>后台控制台需要验证身份</p></div>
   <div class="field">
     <label>Auth Token</label>
     <input type="password" id="tokenIn" placeholder="sk-your-token..." autofocus />
@@ -33,13 +33,28 @@ body{font-family:'Inter',sans-serif;background:linear-gradient(135deg,#e0e7ff 0%
   <div class="err" id="errMsg">Token 无效，请检查后重试</div>
 </div>
 <script>
+function buildNextUrl(base, token){
+  return base + (base.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(token);
+}
+const params=new URLSearchParams(window.location.search);
+const cleanParams=new URLSearchParams(window.location.search);
+cleanParams.delete('token');
+cleanParams.delete('next');
+const cleanSearch=cleanParams.toString();
+const currentPath=window.location.pathname + (cleanSearch ? '?' + cleanSearch : '');
+const inferredNext=window.location.pathname==='/logs'
+  ? '/admin?tab=logs'
+  : currentPath.startsWith('/admin')
+    ? currentPath
+    : '/admin';
+const nextTarget=params.get('next')||inferredNext;
 const saved=localStorage.getItem('cursor2api_token');
-if(saved)window.location.href='/logs?token='+encodeURIComponent(saved);
+if(saved)window.location.href=buildNextUrl(nextTarget,saved);
 document.getElementById('tokenIn').addEventListener('keydown',e=>{if(e.key==='Enter')doLogin()});
 async function doLogin(){
   const token=document.getElementById('tokenIn').value.trim();if(!token)return;
   try{const r=await fetch('/api/stats?token='+encodeURIComponent(token));
-  if(r.ok){localStorage.setItem('cursor2api_token',token);window.location.href='/logs?token='+encodeURIComponent(token)}
+  if(r.ok){localStorage.setItem('cursor2api_token',token);window.location.href=buildNextUrl(nextTarget,token)}
   else{document.getElementById('errMsg').style.display='block'}}
   catch{document.getElementById('errMsg').style.display='block'}
 }

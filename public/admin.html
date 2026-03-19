@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<script>!function(){var t=localStorage.getItem('cursor2api_theme');if(!t){t=window.matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light'}document.documentElement.setAttribute('data-theme',t)}()</script>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cursor2API - 后台控制台</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/public/admin.css">
+</head>
+<body>
+<div class="app">
+  <div class="hdr">
+    <div class="hdr-left">
+      <h1><span class="ic">⚡</span> Cursor2API 后台</h1>
+      <p class="hdr-sub">运行状态、实时日志与配置管理</p>
+    </div>
+    <div class="hdr-stats">
+      <div class="sc"><b id="sT">0</b>请求</div>
+      <div class="sc">✓<b id="sS">0</b></div>
+      <div class="sc">✗<b id="sE">0</b></div>
+      <div class="sc"><b id="sA">-</b>ms 均耗</div>
+      <div class="sc">⚡<b id="sF">-</b>ms TTFT</div>
+    </div>
+    <div class="hdr-r" id="headerActions">
+      <div class="save-state" id="saveState">配置未修改</div>
+      <button class="hdr-btn primary" id="saveBtn" onclick="saveConfig()" disabled>保存配置</button>
+      <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" title="切换主题"></button>
+      <div class="conn on" id="conn"><div class="d"></div><span>已连接</span></div>
+    </div>
+  </div>
+
+  <div class="admin-nav" id="adminNav">
+    <button class="admin-nav-btn a" data-dashboard-tab="overview" onclick="switchDashboardTab('overview', true)">总览</button>
+    <button class="admin-nav-btn" data-dashboard-tab="logs" onclick="switchDashboardTab('logs', true)">日志</button>
+    <button class="admin-nav-btn" data-dashboard-tab="config" onclick="switchDashboardTab('config', true)">配置</button>
+  </div>
+
+  <div class="admin-alerts" id="adminAlerts"></div>
+
+  <div class="dashboard-stage">
+    <section class="dashboard-section active" id="section-overview">
+      <div class="overview-shell">
+        <div class="overview-grid" id="overviewCards"></div>
+
+        <div class="overview-columns">
+          <div class="overview-panel">
+            <div class="panel-title">风险与提醒</div>
+            <div id="overviewWarnings"></div>
+          </div>
+
+          <div class="overview-panel">
+            <div class="panel-title">快捷操作</div>
+            <div class="quick-actions">
+              <button class="hdr-btn" onclick="switchDashboardTab('logs', true)">查看实时日志</button>
+              <button class="hdr-btn" onclick="switchDashboardTab('config', true)">编辑配置</button>
+              <a class="hdr-btn link-btn" id="healthLink" href="/health" target="_blank" rel="noreferrer">打开 /health</a>
+            </div>
+          </div>
+        </div>
+
+        <div class="overview-panel grow">
+          <div class="panel-title">最近请求</div>
+          <div class="recent-list" id="recentRequests">
+            <div class="empty compact"><div class="ic">📡</div><p>等待请求...</p></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="dashboard-section" id="section-logs">
+      <div class="main admin-logs-main">
+        <div class="side">
+          <div class="search"><div class="sw"><input class="si" id="searchIn" placeholder="关键字搜索 (Ctrl+K)"/></div></div>
+          <div class="tbar" id="tbar">
+            <button class="tb a" data-t="all" onclick="setTF('all',this)">全部</button>
+            <button class="tb" data-t="today" onclick="setTF('today',this)">今天</button>
+            <button class="tb" data-t="2d" onclick="setTF('2d',this)">两天</button>
+            <button class="tb" data-t="7d" onclick="setTF('7d',this)">一周</button>
+            <button class="tb" data-t="30d" onclick="setTF('30d',this)">一月</button>
+          </div>
+          <div class="fbar" id="fbar">
+            <button class="fb a" data-f="all" onclick="fR('all',this)">全部<span class="fc" id="cA">0</span></button>
+            <button class="fb" data-f="success" onclick="fR('success',this)">✓<span class="fc" id="cS">0</span></button>
+            <button class="fb" data-f="error" onclick="fR('error',this)">✗<span class="fc" id="cE">0</span></button>
+            <button class="fb" data-f="processing" onclick="fR('processing',this)">◌<span class="fc" id="cP">0</span></button>
+            <button class="fb" data-f="intercepted" onclick="fR('intercepted',this)">⊘<span class="fc" id="cI">0</span></button>
+          </div>
+          <div class="rlist" id="rlist">
+            <div class="empty"><div class="ic">📡</div><p>等待请求...</p></div>
+          </div>
+        </div>
+        <div class="dp">
+          <div class="dh">
+            <h2>🔍 <span id="dTitle">实时日志流</span></h2>
+            <div class="dh-acts">
+              <button class="hdr-btn" id="clearBtn" onclick="clearLogs()">🗑 清空</button>
+              <label class="auto-expand"><input type="checkbox" id="autoExpand"/>自动展开详情</label>
+              <div class="lvf" id="lvF">
+                <button class="lvb a" onclick="sL('all',this)">全部</button>
+                <button class="lvb" onclick="sL('info',this)">Info</button>
+                <button class="lvb" onclick="sL('warn',this)">Warn</button>
+                <button class="lvb" onclick="sL('error',this)">Error</button>
+              </div>
+            </div>
+          </div>
+          <div class="scard" id="scard"><div class="sgrid" id="sgrid"></div></div>
+          <div class="ptl" id="ptl"><div class="ptl-lbl">阶段耗时</div><div class="ptl-bar" id="pbar"></div></div>
+          <div class="tabs" id="tabs" style="display:none">
+            <div class="tab a" data-tab="logs" onclick="setTab('logs',this)">📋 日志</div>
+            <div class="tab" data-tab="request" onclick="setTab('request',this)">📥 请求参数</div>
+            <div class="tab" data-tab="prompts" onclick="setTab('prompts',this)">💬 提示词对比</div>
+            <div class="tab" data-tab="response" onclick="setTab('response',this)">📤 响应内容</div>
+          </div>
+          <div class="tab-content" id="tabContent">
+            <div class="llist" id="logList">
+              <div class="empty"><div class="ic">📋</div><p>实时日志将在此显示</p><p class="sub">发起请求后即可看到全链路日志</p></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="dashboard-section" id="section-config">
+      <div class="config-shell">
+        <aside class="config-side-nav" id="configNav"></aside>
+        <div class="config-panel">
+          <div class="config-summary" id="configSummary"></div>
+          <div class="config-groups" id="configGroups">
+            <div class="empty"><div class="ic">⚙️</div><p>正在加载配置...</p></div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+</div>
+<script src="/public/logs.js"></script>
+<script src="/public/admin.js"></script>
+</body>
+</html>

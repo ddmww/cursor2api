@@ -11,7 +11,8 @@ import express from 'express';
 import { getConfig, initConfigWatcher, stopConfigWatcher } from './config.js';
 import { handleMessages, listModels, countTokens } from './handler.js';
 import { handleOpenAIChatCompletions, handleOpenAIResponses } from './openai-handler.js';
-import { serveLogViewer, apiGetLogs, apiGetRequests, apiGetStats, apiGetPayload, apiLogsStream, serveLogViewerLogin, apiClearLogs } from './log-viewer.js';
+import { apiGetLogs, apiGetRequests, apiGetStats, apiGetPayload, apiLogsStream, apiClearLogs } from './log-viewer.js';
+import { dashboardAuth, serveAdminUi, redirectLogsToAdmin, apiGetAdminConfig, apiPutAdminConfig } from './admin-ui.js';
 import { loadLogsFromFiles } from './logger.js';
 
 // 从 package.json 读取版本号，统一来源，避免多处硬编码
@@ -40,36 +41,17 @@ app.use((_req, res, next) => {
 // ★ 静态文件路由（无需鉴权，CSS/JS 等）
 app.use('/public', express.static('public'));
 
-// ★ 日志查看器鉴权中间件：配置了 authTokens 时需要验证
-const logViewerAuth = (req: express.Request, res: express.Response, next: express.NextFunction) => {
-    const tokens = getConfig().authTokens;
-    if (!tokens || tokens.length === 0) return next(); // 未配置 token 则放行
-
-    // 支持多种传入方式: query ?token=xxx, Authorization header, x-api-key header
-    const tokenFromQuery = req.query.token as string | undefined;
-    const authHeader = req.headers['authorization'] || req.headers['x-api-key'];
-    const tokenFromHeader = authHeader ? String(authHeader).replace(/^Bearer\s+/i, '').trim() : undefined;
-    const token = tokenFromQuery || tokenFromHeader;
-
-    if (!token || !tokens.includes(token)) {
-        // HTML 页面请求 → 返回登录页; API 请求 → 返回 JSON 错误
-        if (req.path === '/logs') {
-            return serveLogViewerLogin(req, res);
-        }
-        res.status(401).json({ error: { message: 'Unauthorized. Provide token via ?token=xxx or Authorization header.', type: 'auth_error' } });
-        return;
-    }
-    next();
-};
-
-// ★ 日志查看器路由（带鉴权）
-app.get('/logs', logViewerAuth, serveLogViewer);
-app.get('/api/logs', logViewerAuth, apiGetLogs);
-app.get('/api/requests', logViewerAuth, apiGetRequests);
-app.get('/api/stats', logViewerAuth, apiGetStats);
-app.get('/api/payload/:requestId', logViewerAuth, apiGetPayload);
-app.get('/api/logs/stream', logViewerAuth, apiLogsStream);
-app.post('/api/logs/clear', logViewerAuth, apiClearLogs);
+// ★ 后台与日志路由（统一鉴权）
+app.get('/admin', dashboardAuth, serveAdminUi);
+app.get('/logs', dashboardAuth, redirectLogsToAdmin);
+app.get('/api/logs', dashboardAuth, apiGetLogs);
+app.get('/api/requests', dashboardAuth, apiGetRequests);
+app.get('/api/stats', dashboardAuth, apiGetStats);
+app.get('/api/payload/:requestId', dashboardAuth, apiGetPayload);
+app.get('/api/logs/stream', dashboardAuth, apiLogsStream);
+app.post('/api/logs/clear', dashboardAuth, apiClearLogs);
+app.get('/api/admin/config', dashboardAuth, apiGetAdminConfig);
+app.put('/api/admin/config', dashboardAuth, apiPutAdminConfig);
 
 // ★ API 鉴权中间件：配置了 authTokens 则需要 Bearer token
 app.use((req, res, next) => {
@@ -133,7 +115,8 @@ app.get('/', (_req, res) => {
             openai_responses: 'POST /v1/responses',
             models: 'GET /v1/models',
             health: 'GET /health',
-            log_viewer: 'GET /logs',
+            admin_ui: 'GET /admin',
+            log_viewer: 'GET /logs → /admin?tab=logs',
         },
         usage: {
             claude_code: 'export ANTHROPIC_BASE_URL=http://localhost:' + config.port,
@@ -171,7 +154,8 @@ app.listen(config.port, () => {
     console.log(`  ├─ Auth:    ${auth}`);
     console.log(`  ├─ Tools:   ${toolsInfo}`);
     console.log(`  ├─ Logging: ${logPersist}`);
-    console.log(`  └─ Logs:    \x1b[35mhttp://localhost:${config.port}/logs\x1b[0m`);
+    console.log(`  ├─ Admin:   \x1b[35mhttp://localhost:${config.port}/admin\x1b[0m`);
+    console.log(`  └─ Logs:    http://localhost:${config.port}/logs → /admin?tab=logs`);
     console.log('');
 
     // ★ 启动 config.yaml 热重载监听
