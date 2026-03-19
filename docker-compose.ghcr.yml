@@ -1,0 +1,27 @@
+services:
+  cursor2api:
+    image: ghcr.io/ddmww/cursor2api:latest
+    container_name: cursor2api
+    restart: unless-stopped
+    ports:
+      - "3010:3010"
+    volumes:
+      # 先从 config.yaml.example 复制一份 config.yaml，再按需修改
+      - ./config.yaml:/app/config.yaml:ro
+      # 持久化日志查看器 JSONL 日志
+      - cursor2api_logs:/app/logs
+    environment:
+      NODE_ENV: production
+      PORT: 3010
+      TIMEOUT: 120
+      # 公网部署时建议启用
+      # AUTH_TOKEN: sk-your-secret-token-1,sk-your-secret-token-2
+      # 只有启用文件日志时才需要保留该卷中的日志
+      # LOG_FILE_ENABLED: "true"
+      # LOG_DIR: /app/logs
+      # 海外机器通常无需代理；国内环境按需取消注释
+      # PROXY: http://host.docker.internal:7890
+
+volumes:
+  cursor2api_logs:
+    name: cursor2api_logs

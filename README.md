@@ -121,6 +121,47 @@ OPENAI_BASE_URL=http://localhost:3010/v1
 
 > ⚠️ **注意**：Cursor IDE 请优先选用 Claude 模型名（通过 `/v1/models` 查看），避免使用 GPT 模型名以获得最佳兼容。
 
+### 6. Fork + GHCR Docker 部署
+
+推荐先在 GitHub 网页将上游仓库 fork 到你自己的公开仓库，例如 `ddmww/cursor2api`，然后重新 clone fork，保留完整历史与 upstream 关系：
+
+```bash
+git clone https://github.com/ddmww/cursor2api.git
+cd cursor2api
+git remote add upstream https://github.com/7836246/cursor2api.git
+git remote -v
+```
+
+仓库内提供了两个 GitHub Actions 工作流：
+
+- `.github/workflows/publish-image.yml`：`main` 分支推送后发布 `ghcr.io/ddmww/cursor2api:latest`，推送 `v*` tag 时发布对应版本镜像
+- `.github/workflows/sync-upstream.yml`：每周自动拉取 `7836246/cursor2api` 的 `main`，并在 fork 中更新 `sync/upstream-main` 分支、自动创建同步 PR
+
+> 💡 首次发布镜像后，请到 GitHub Packages 页面将 `ghcr.io/ddmww/cursor2api` 的可见性确认或调整为 `public`。
+
+镜像地址固定为：
+
+```text
+ghcr.io/ddmww/cursor2api:latest
+ghcr.io/ddmww/cursor2api:v2.7.5
+```
+
+如果你只想拉镜像运行，不需要本地构建，复制配置文件后直接使用仓库内的 `docker-compose.ghcr.yml`：
+
+```bash
+cp config.yaml.example config.yaml
+docker compose -f docker-compose.ghcr.yml up -d
+```
+
+该 compose 文件默认约定：
+
+- 容器名：`cursor2api`
+- 配置文件挂载：`./config.yaml:/app/config.yaml:ro`
+- 日志卷：`cursor2api_logs:/app/logs`
+- 服务端口：`3010`
+
+如果启用了 `logging.file_enabled: true` 或 `LOG_FILE_ENABLED=true`，重启容器后仍会从 `cursor2api_logs` 中恢复日志。
+
 ## 🖥️ 日志查看器
 
 启动服务后访问 `http://localhost:3010/logs` 即可打开全链路日志查看器。
@@ -148,6 +189,10 @@ http://localhost:3010/logs?token=sk-your-secret-token-1
 
 ```
 cursor2api/
+├── .github/
+│   └── workflows/
+│       ├── publish-image.yml   # main/tag 推送到 GHCR
+│       └── sync-upstream.yml   # 定时同步 upstream/main 并自动开 PR
 ├── src/
 │   ├── index.ts            # 入口 + Express 服务 + 路由 + API 鉴权中间件
 │   ├── config.ts           # 配置管理（含 auth_tokens / vision.proxy）
@@ -177,6 +222,9 @@ cursor2api/
 │   ├── e2e-chat.mjs             # 端到端对话测试
 │   └── e2e-agentic.mjs          # Claude Code Agentic 压测
 ├── config.yaml.example     # 配置文件模板（复制为 config.yaml 使用）
+├── docker-compose.ghcr.yml # 基于 GHCR 镜像的部署文件
+├── docker-compose.yml      # 本地源码构建部署文件
+├── Dockerfile              # 镜像构建入口
 ├── package.json
 └── tsconfig.json
 ```

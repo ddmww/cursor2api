@@ -1,0 +1,124 @@
+name: Sync upstream
+
+on:
+  schedule:
+    - cron: '17 3 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out fork
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream https://github.com/7836246/cursor2api.git
+          git fetch origin main
+          git fetch upstream main
+
+      - name: Update sync branch
+        id: sync
+        run: |
+          if git merge-base --is-ancestor upstream/main origin/main; then
+            echo "needs_pr=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git checkout -B sync/upstream-main upstream/main
+          git push --force-with-lease origin sync/upstream-main
+
+          echo "needs_pr=true" >> "$GITHUB_OUTPUT"
+          echo "upstream_sha=$(git rev-parse upstream/main)" >> "$GITHUB_OUTPUT"
+
+      - name: Create or update sync PR
+        if: steps.sync.outputs.needs_pr == 'true'
+        uses: actions/github-script@v7
+        env:
+          UPSTREAM_SHA: ${{ steps.sync.outputs.upstream_sha }}
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const head = `${owner}:sync/upstream-main`;
+            const title = `chore: sync upstream/main @ ${process.env.UPSTREAM_SHA.slice(0, 7)}`;
+            const body = [
+              'Automated upstream sync from `7836246/cursor2api`.',
+              '',
+              '- Source branch: `upstream/main`',
+              '- Target branch: `main`',
+              `- Upstream commit: \`${process.env.UPSTREAM_SHA}\``,
+              '',
+              'This workflow never pushes directly to `main`.',
+              'If GitHub marks the PR as conflicted, resolve the conflict in this PR before merging.'
+            ].join('\n');
+
+            const { data: pulls } = await github.rest.pulls.list({
+              owner,
+              repo,
+              state: 'open',
+              head,
+              base: 'main'
+            });
+
+            if (pulls.length > 0) {
+              await github.rest.pulls.update({
+                owner,
+                repo,
+                pull_number: pulls[0].number,
+                title,
+                body
+              });
+              core.info(`Updated PR #${pulls[0].number}`);
+            } else {
+              const { data: pull } = await github.rest.pulls.create({
+                owner,
+                repo,
+                title,
+                head,
+                base: 'main',
+                body
+              });
+              core.info(`Created PR #${pull.number}`);
+            }
+
+      - name: Close stale sync PR
+        if: steps.sync.outputs.needs_pr != 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const head = `${owner}:sync/upstream-main`;
+
+            const { data: pulls } = await github.rest.pulls.list({
+              owner,
+              repo,
+              state: 'open',
+              head,
+              base: 'main'
+            });
+
+            for (const pull of pulls) {
+              await github.rest.pulls.update({
+                owner,
+                repo,
+                pull_number: pull.number,
+                state: 'closed'
+              });
+              core.info(`Closed stale PR #${pull.number}`);
+            }
