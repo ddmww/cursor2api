@@ -146,21 +146,30 @@ ghcr.io/ddmww/cursor2api:latest
 ghcr.io/ddmww/cursor2api:v2.7.5
 ```
 
-如果你只想拉镜像运行，不需要本地构建，复制配置文件后直接使用仓库内的 `docker-compose.ghcr.yml`：
+如果你只想拉镜像运行，不需要本地构建，直接使用仓库内的 `docker-compose.ghcr.yml`：
 
 ```bash
-cp config.yaml.example config.yaml
 docker compose -f docker-compose.ghcr.yml up -d
 ```
 
 该 compose 文件默认约定：
 
 - 容器名：`cursor2api`
-- 配置文件挂载：`./config.yaml:/app/config.yaml:ro`
-- 日志卷：`cursor2api_logs:/app/logs`
+- 数据卷：`cursor2api_data:/app/data`
+- 配置文件路径：`/app/data/config.yaml`（由 `CONFIG_PATH` 指定）
+- 日志目录：`/app/data/logs`
 - 服务端口：`3010`
 
-如果启用了 `logging.file_enabled: true` 或 `LOG_FILE_ENABLED=true`，重启容器后仍会从 `cursor2api_logs` 中恢复日志。
+第一次启动时即使还没有 `config.yaml` 也没关系，服务会先用默认值启动。你可以直接访问 `/admin`，在后台保存一次配置后，`/app/data/config.yaml` 会自动创建并持久化到卷里。
+
+如果你更希望直接在宿主机上编辑配置，也可以把卷替换成绑定挂载：
+
+```yaml
+volumes:
+  - ./data:/app/data
+```
+
+如果启用了 `logging.file_enabled: true` 或 `LOG_FILE_ENABLED=true`，重启容器后仍会从 `cursor2api_data` 中恢复日志。
 
 ## 🖥️ 日志查看器
 
@@ -285,6 +294,7 @@ AI 按此格式输出 → 我们解析并转换为标准的 Anthropic `tool_use`
 | 环境变量 | 说明 |
 |----------|------|
 | `PORT` | 服务端口 |
+| `CONFIG_PATH` | 配置文件路径（例如 `/app/data/config.yaml`） |
 | `AUTH_TOKEN` | API 鉴权 token（逗号分隔多个） |
 | `PROXY` | 全局代理地址 |
 | `CURSOR_MODEL` | Cursor 使用的模型 |
@@ -295,6 +305,12 @@ AI 按此格式输出 → 我们解析并转换为标准的 Anthropic `tool_use`
 | `LOG_DIR` | 日志文件目录 |
 | `MAX_AUTO_CONTINUE` | 截断自动续写次数 (`0`=禁用) |
 | `SANITIZE_RESPONSE` | 响应内容清洗开关 (`true`/`false`，默认 `false`) |
+
+图片处理开关在 `config.yaml` 中控制：
+
+- `vision.enabled: false` = 完全关闭 OCR / Vision API
+- `vision.enabled: true` + `vision.mode: ocr` = 使用本地 OCR
+- `vision.enabled: true` + `vision.mode: api` = 使用外部视觉模型 API
 
 ## 免责声明 / Disclaimer
 

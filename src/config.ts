@@ -2,7 +2,7 @@ import { readFileSync, existsSync, watch, type FSWatcher } from 'fs';
 import { parse as parseYaml } from 'yaml';
 import type { AppConfig } from './types.js';
 
-export const CONFIG_FILE_PATH = 'config.yaml';
+export const CONFIG_FILE_PATH = process.env.CONFIG_PATH || 'config.yaml';
 export const CONFIG_TEMPLATE_PATH = 'config.yaml.example';
 
 let config: AppConfig;

@@ -36,18 +36,19 @@ COPY --from=builder --chown=cursor:nodejs /app/dist ./dist
 # 拷贝前端静态资源（日志查看器 Web UI）
 COPY --chown=cursor:nodejs public ./public
 
-# 创建日志目录并授权
-RUN mkdir -p /app/logs && chown cursor:nodejs /app/logs
+# 创建可持久化数据目录并授权
+RUN mkdir -p /app/data/logs && chown -R cursor:nodejs /app/data
 
-# 注意：config.yaml 不打包进镜像，通过 docker-compose volumes 挂载
-# 如果未挂载，服务会使用内置默认值 + 环境变量
+# 注意：config.yaml 不打包进镜像。
+# 推荐通过 CONFIG_PATH=/app/data/config.yaml + /app/data 挂载来持久化后台配置和日志。
+# 如果未挂载，服务会使用内置默认值 + 环境变量。
 
 # 切换到非 root 用户
 USER cursor
 
 # 声明对外暴露的端口和持久化卷
 EXPOSE 3010
-VOLUME ["/app/logs"]
+VOLUME ["/app/data"]
 
 # 启动服务
 CMD ["npm", "start"]
