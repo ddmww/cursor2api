@@ -140,6 +140,7 @@ export interface AppConfig {
         disabled?: boolean;                               // 禁用模式：完全不注入工具定义，最大化节省上下文
     };
     sanitizeEnabled: boolean;    // 是否启用响应内容清洗（替换 Cursor 身份引用为 Claude），默认 false
+    fixedFallbackResponsesEnabled: boolean; // 是否启用身份/能力固定回复模板
     refusalPatterns?: string[];  // 自定义拒绝检测规则（追加到内置列表之后）
     fingerprint: {
         userAgent: string;

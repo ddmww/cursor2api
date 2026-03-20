@@ -42,6 +42,10 @@ import {
 } from './constants.js';
 
 // Re-export for other modules (openai-handler.ts etc.)
+export function fixedFallbackResponsesEnabled(): boolean {
+    return getConfig().fixedFallbackResponsesEnabled !== false;
+}
+
 export { isRefusal, CLAUDE_IDENTITY_RESPONSE, CLAUDE_TOOLS_RESPONSE };
 
 // ==================== Thinking 提取 ====================
@@ -237,7 +241,9 @@ export function sanitizeResponse(text: string): string {
     // === Prompt injection accusation cleanup ===
     // If the response accuses us of prompt injection, replace the entire thing
     if (/prompt\s+injection|social\s+engineering|I\s+need\s+to\s+stop\s+and\s+flag|What\s+I\s+will\s+not\s+do/i.test(result)) {
-        return CLAUDE_IDENTITY_RESPONSE;
+        if (fixedFallbackResponsesEnabled()) {
+            return CLAUDE_IDENTITY_RESPONSE;
+        }
     }
 
     // === Tool availability claim cleanup ===
@@ -343,7 +349,7 @@ export async function handleMessages(req: Request, res: Response): Promise<void>
     });
 
     try {
-        if (isIdentityProbe(body)) {
+        if (fixedFallbackResponsesEnabled() && isIdentityProbe(body)) {
             log.intercepted('身份探针拦截 → 返回模拟响应');
             if (body.stream) {
                 return await handleMockIdentityStream(res, body);
@@ -962,12 +968,17 @@ async function handleDirectTextStream(
     // visibleText 现在始终是剥离 thinking 后的文本
     const usedFallback = !streamer.hasSentText() && isRefusal(finalVisibleText);
     if (usedFallback) {
-        if (isToolCapabilityQuestion(body)) {
-            log.info('Handler', 'refusal', '工具能力询问被拒绝 → 返回 Claude 能力描述');
-            finalTextToSend = CLAUDE_TOOLS_RESPONSE;
+        if (fixedFallbackResponsesEnabled()) {
+            if (isToolCapabilityQuestion(body)) {
+                log.info('Handler', 'refusal', '工具能力询问被拒绝 → 返回 Claude 能力描述');
+                finalTextToSend = CLAUDE_TOOLS_RESPONSE;
+            } else {
+                log.warn('Handler', 'refusal', `重试${MAX_REFUSAL_RETRIES}次后仍被拒绝 → 降级为 Claude 身份回复`);
+                finalTextToSend = CLAUDE_IDENTITY_RESPONSE;
+            }
         } else {
-            log.warn('Handler', 'refusal', `重试${MAX_REFUSAL_RETRIES}次后仍被拒绝 → 降级为 Claude 身份回复`);
-            finalTextToSend = CLAUDE_IDENTITY_RESPONSE;
+            log.info('Handler', 'refusal', '固定身份/能力回复已关闭，返回上游原始拒绝文本');
+            finalTextToSend = sanitizeResponse(finalVisibleText);
         }
     } else {
         finalTextToSend = streamer.finish();
@@ -1278,13 +1289,17 @@ async function handleStream(res: Response, cursorReq: CursorChatRequest, body: A
 
         if (shouldRetryRefusal()) {
             if (!hasTools) {
-                // 工具能力询问 → 返回详细能力描述；其他 → 返回身份回复
-                if (isToolCapabilityQuestion(body)) {
-                    log.info('Handler', 'refusal', '工具能力询问被拒绝 → 返回 Claude 能力描述');
-                    fullResponse = CLAUDE_TOOLS_RESPONSE;
+                if (fixedFallbackResponsesEnabled()) {
+                    // 工具能力询问 → 返回详细能力描述；其他 → 返回身份回复
+                    if (isToolCapabilityQuestion(body)) {
+                        log.info('Handler', 'refusal', '工具能力询问被拒绝 → 返回 Claude 能力描述');
+                        fullResponse = CLAUDE_TOOLS_RESPONSE;
+                    } else {
+                        log.warn('Handler', 'refusal', `重试${MAX_REFUSAL_RETRIES}次后仍被拒绝 → 降级为 Claude 身份回复`);
+                        fullResponse = CLAUDE_IDENTITY_RESPONSE;
+                    }
                 } else {
-                    log.warn('Handler', 'refusal', `重试${MAX_REFUSAL_RETRIES}次后仍被拒绝 → 降级为 Claude 身份回复`);
-                    fullResponse = CLAUDE_IDENTITY_RESPONSE;
+                    log.info('Handler', 'refusal', '固定身份/能力回复已关闭，保留上游拒绝文本');
                 }
             } else {
                 // 工具模式拒绝：不返回纯文本（会让 Claude Code 误认为任务完成）
@@ -1733,12 +1748,14 @@ async function handleNonStream(res: Response, cursorReq: CursorChatRequest, body
             if (hasTools) {
                 log.warn('Handler', 'refusal', '非流式工具模式下拒绝 → 引导模型输出');
                 fullText = 'I understand the request. Let me analyze the information and proceed with the appropriate action.';
-            } else if (isToolCapabilityQuestion(body)) {
+            } else if (fixedFallbackResponsesEnabled() && isToolCapabilityQuestion(body)) {
                 log.info('Handler', 'refusal', '非流式工具能力询问被拒绝 → 返回 Claude 能力描述');
                 fullText = CLAUDE_TOOLS_RESPONSE;
-            } else {
+            } else if (fixedFallbackResponsesEnabled()) {
                 log.warn('Handler', 'refusal', `非流式重试${MAX_REFUSAL_RETRIES}次后仍被拒绝 → 降级为 Claude 身份回复`);
                 fullText = CLAUDE_IDENTITY_RESPONSE;
+            } else {
+                log.info('Handler', 'refusal', '固定身份/能力回复已关闭，保留上游拒绝文本');
             }
         }
     }

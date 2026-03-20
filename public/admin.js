@@ -11,6 +11,7 @@ const CONFIG_GROUPS=[
   {id:'security',title:'鉴权与安全',fields:[
     {path:'auth_tokens',label:'Auth Tokens',type:'list-secret',help:'每行一个 token。为空则 API 与后台开放。',mono:true,rows:4},
     {path:'sanitize_response',label:'响应内容清洗',type:'checkbox',help:'将响应中的 Cursor 身份引用替换为 Claude。'},
+    {path:'fixed_fallback_responses',label:'固定身份/能力回复',type:'checkbox',help:'关闭后，不再注入 Claude 身份与能力说明模板。'},
     {path:'refusal_patterns',label:'自定义拒绝检测规则',type:'list',help:'每行一条规则。',mono:true,rows:5,full:true}
   ]},
   {id:'behavior',title:'上下文与行为',fields:[

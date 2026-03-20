@@ -37,6 +37,7 @@ interface EditableYamlConfig {
         exclude: StringList;
     };
     sanitize_response: boolean;
+    fixed_fallback_responses: boolean;
     refusal_patterns: StringList;
     fingerprint: {
         user_agent: string;
@@ -79,6 +80,7 @@ const LIVE_RELOAD_FIELDS = [
     'tools.include_only',
     'tools.exclude',
     'sanitize_response',
+    'fixed_fallback_responses',
     'refusal_patterns',
     'fingerprint.user_agent',
     'vision.enabled',
@@ -110,6 +112,7 @@ const ENV_OVERRIDE_MAP: Record<string, string> = {
     'logging.dir': 'LOG_DIR',
     'logging.persist_mode': 'LOG_PERSIST_MODE',
     sanitize_response: 'SANITIZE_RESPONSE',
+    fixed_fallback_responses: 'FIXED_FALLBACK_RESPONSES',
     'fingerprint.user_agent': 'FP',
 };
 
@@ -227,6 +230,7 @@ function getDefaultEditableConfig(): EditableYamlConfig {
             exclude: [],
         },
         sanitize_response: false,
+        fixed_fallback_responses: true,
         refusal_patterns: [],
         fingerprint: {
             user_agent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36',
@@ -303,6 +307,7 @@ function readEditableConfigFile(): { config: EditableYamlConfig; fileExists: boo
                 exclude: asStringList(tools.exclude),
             },
             sanitize_response: asBoolean(raw.sanitize_response, fallback.sanitize_response),
+            fixed_fallback_responses: asBoolean(raw.fixed_fallback_responses, fallback.fixed_fallback_responses),
             refusal_patterns: asStringList(raw.refusal_patterns),
             fingerprint: {
                 user_agent: asString(fingerprint.user_agent, fallback.fingerprint.user_agent),
@@ -461,6 +466,7 @@ function validateConfig(input: unknown): { config?: EditableYamlConfig; errors: 
     normalized.tools.exclude = asStringList(tools.exclude);
 
     normalized.sanitize_response = asBoolean(raw.sanitize_response, normalized.sanitize_response);
+    normalized.fixed_fallback_responses = asBoolean(raw.fixed_fallback_responses, normalized.fixed_fallback_responses);
     normalized.refusal_patterns = asStringList(raw.refusal_patterns);
 
     const fingerprint = asObject(raw.fingerprint);
@@ -536,6 +542,7 @@ function writeEditableConfig(config: EditableYamlConfig): void {
     } else {
         doc.deleteIn(['sanitize_response']);
     }
+    doc.setIn(['fixed_fallback_responses'], config.fixed_fallback_responses);
 
     setOptionalStringList(doc, ['refusal_patterns'], config.refusal_patterns);
     doc.setIn(['fingerprint', 'user_agent'], config.fingerprint.user_agent);

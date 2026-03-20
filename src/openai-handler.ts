@@ -40,6 +40,7 @@ import {
     extractThinking,
     CLAUDE_IDENTITY_RESPONSE,
     CLAUDE_TOOLS_RESPONSE,
+    fixedFallbackResponsesEnabled,
     MAX_REFUSAL_RETRIES,
     estimateInputTokens,
 } from './handler.js';
@@ -476,7 +477,7 @@ export async function handleOpenAIChatCompletions(req: Request, res: Response): 
         // 注意：图片预处理已移入 convertToCursorRequest → preprocessImages() 统一处理
 
         // Step 1.6: 身份探针拦截（复用 Anthropic handler 的逻辑）
-        if (isIdentityProbe(anthropicReq)) {
+        if (fixedFallbackResponsesEnabled() && isIdentityProbe(anthropicReq)) {
             log.intercepted('身份探针拦截 (OpenAI)');
             const mockText = "I am Claude, an advanced AI programming assistant created by Anthropic. I am ready to help you write code, debug, and answer your technical questions. Please let me know what we should work on!";
             if (body.stream) {
@@ -714,9 +715,11 @@ async function handleOpenAIIncrementalTextStream(
 
     let finalTextToSend: string;
     if (usedFallback) {
-        finalTextToSend = isToolCapabilityQuestion(anthropicReq)
-            ? CLAUDE_TOOLS_RESPONSE
-            : CLAUDE_IDENTITY_RESPONSE;
+        finalTextToSend = fixedFallbackResponsesEnabled()
+            ? (isToolCapabilityQuestion(anthropicReq)
+                ? CLAUDE_TOOLS_RESPONSE
+                : CLAUDE_IDENTITY_RESPONSE)
+            : sanitizeResponse(refusalText);
     } else {
         finalTextToSend = streamer.finish();
     }
@@ -946,10 +949,12 @@ async function handleOpenAIStream(
         }
         if (shouldRetryRefusal()) {
             if (!hasTools) {
-                if (isToolCapabilityQuestion(anthropicReq)) {
-                    fullResponse = CLAUDE_TOOLS_RESPONSE;
-                } else {
-                    fullResponse = CLAUDE_IDENTITY_RESPONSE;
+                if (fixedFallbackResponsesEnabled()) {
+                    if (isToolCapabilityQuestion(anthropicReq)) {
+                        fullResponse = CLAUDE_TOOLS_RESPONSE;
+                    } else {
+                        fullResponse = CLAUDE_IDENTITY_RESPONSE;
+                    }
                 }
             } else {
                 fullResponse = 'I understand the request. Let me analyze the information and proceed with the appropriate action.';
@@ -1173,10 +1178,10 @@ async function handleOpenAINonStream(
             if (hasTools) {
                 // 记录在详细日志
                 fullText = 'I understand the request. Let me analyze the information and proceed with the appropriate action.';
-            } else if (isToolCapabilityQuestion(anthropicReq)) {
+            } else if (fixedFallbackResponsesEnabled() && isToolCapabilityQuestion(anthropicReq)) {
                 // 记录在详细日志
                 fullText = CLAUDE_TOOLS_RESPONSE;
-            } else {
+            } else if (fixedFallbackResponsesEnabled()) {
                 // 记录在详细日志
                 fullText = CLAUDE_IDENTITY_RESPONSE;
             }
@@ -1364,7 +1369,7 @@ export async function handleOpenAIResponses(req: Request, res: Response): Promis
         log.recordCursorRequest(cursorReq);
 
         // 身份探针拦截
-        if (isIdentityProbe(anthropicReq)) {
+        if (fixedFallbackResponsesEnabled() && isIdentityProbe(anthropicReq)) {
             log.intercepted('身份探针拦截 (Responses)');
             const mockText = "I am Claude, an advanced AI programming assistant created by Anthropic. I am ready to help you write code, debug, and answer your technical questions.";
             if (isStream) {
@@ -1590,7 +1595,7 @@ async function handleResponsesStream(
             }
         }
 
-        if (shouldRetryRefusal()) {
+        if (shouldRetryRefusal() && fixedFallbackResponsesEnabled()) {
             if (isToolCapabilityQuestion(anthropicReq)) {
                 fullResponse = CLAUDE_TOOLS_RESPONSE;
             } else {
@@ -1796,7 +1801,7 @@ async function handleResponsesNonStream(
             }
             if (!shouldRetry()) break;
         }
-        if (shouldRetry()) {
+        if (shouldRetry() && fixedFallbackResponsesEnabled()) {
             if (isToolCapabilityQuestion(anthropicReq)) {
                 fullText = CLAUDE_TOOLS_RESPONSE;
             } else {

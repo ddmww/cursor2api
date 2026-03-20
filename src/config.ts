@@ -102,6 +102,10 @@ function parseYamlConfig(defaults: AppConfig): { config: AppConfig; raw: Record<
         if (yaml.sanitize_response !== undefined) {
             result.sanitizeEnabled = yaml.sanitize_response === true;
         }
+        // ★ 固定身份/能力回复模板开关（默认开启）
+        if (yaml.fixed_fallback_responses !== undefined) {
+            result.fixedFallbackResponsesEnabled = yaml.fixed_fallback_responses !== false;
+        }
         // ★ 自定义拒绝检测规则
         if (Array.isArray(yaml.refusal_patterns)) {
             result.refusalPatterns = yaml.refusal_patterns.map(String).filter(Boolean);
@@ -171,6 +175,9 @@ function applyEnvOverrides(cfg: AppConfig): void {
     if (process.env.SANITIZE_RESPONSE !== undefined) {
         cfg.sanitizeEnabled = process.env.SANITIZE_RESPONSE === 'true' || process.env.SANITIZE_RESPONSE === '1';
     }
+    if (process.env.FIXED_FALLBACK_RESPONSES !== undefined) {
+        cfg.fixedFallbackResponsesEnabled = process.env.FIXED_FALLBACK_RESPONSES !== 'false' && process.env.FIXED_FALLBACK_RESPONSES !== '0';
+    }
 
     // 从 base64 FP 环境变量解析指纹
     if (process.env.FP) {
@@ -194,6 +201,7 @@ function defaultConfig(): AppConfig {
         maxAutoContinue: 0,
         maxHistoryMessages: -1,
         sanitizeEnabled: false,  // 默认关闭响应内容清洗
+        fixedFallbackResponsesEnabled: true,
         fingerprint: {
             userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36',
         },
@@ -236,6 +244,7 @@ function detectChanges(oldCfg: AppConfig, newCfg: AppConfig): string[] {
     // refusalPatterns
     // sanitize_response
     if (oldCfg.sanitizeEnabled !== newCfg.sanitizeEnabled) changes.push(`sanitize_response: ${oldCfg.sanitizeEnabled} → ${newCfg.sanitizeEnabled}`);
+    if (oldCfg.fixedFallbackResponsesEnabled !== newCfg.fixedFallbackResponsesEnabled) changes.push(`fixed_fallback_responses: ${oldCfg.fixedFallbackResponsesEnabled} → ${newCfg.fixedFallbackResponsesEnabled}`);
 
     if (JSON.stringify(oldCfg.refusalPatterns) !== JSON.stringify(newCfg.refusalPatterns)) changes.push(`refusal_patterns: ${oldCfg.refusalPatterns?.length || 0} → ${newCfg.refusalPatterns?.length || 0} rule(s)`);
 
