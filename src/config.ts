@@ -77,10 +77,12 @@ function parseYamlConfig(defaults: AppConfig): { config: AppConfig; raw: Record<
         }
         // ★ 日志文件持久化
         if (yaml.logging !== undefined) {
+            const persistModes = ['compact', 'full', 'summary'];
             result.logging = {
                 file_enabled: yaml.logging.file_enabled === true, // 默认关闭
                 dir: yaml.logging.dir || './logs',
                 max_days: typeof yaml.logging.max_days === 'number' ? yaml.logging.max_days : 7,
+                persist_mode: persistModes.includes(yaml.logging.persist_mode) ? yaml.logging.persist_mode : 'summary',
             };
         }
         // ★ 工具处理配置
@@ -92,6 +94,8 @@ function parseYamlConfig(defaults: AppConfig): { config: AppConfig; raw: Record<
                 descriptionMaxLength: typeof t.description_max_length === 'number' ? t.description_max_length : 0,
                 includeOnly: Array.isArray(t.include_only) ? t.include_only.map(String) : undefined,
                 exclude: Array.isArray(t.exclude) ? t.exclude.map(String) : undefined,
+                passthrough: t.passthrough === true,
+                disabled: t.disabled === true,
             };
         }
         // ★ 响应内容清洗开关（默认关闭）
@@ -140,12 +144,28 @@ function applyEnvOverrides(cfg: AppConfig): void {
     }
     // Logging 环境变量覆盖
     if (process.env.LOG_FILE_ENABLED !== undefined) {
-        if (!cfg.logging) cfg.logging = { file_enabled: false, dir: './logs', max_days: 7 };
+        if (!cfg.logging) cfg.logging = { file_enabled: false, dir: './logs', max_days: 7, persist_mode: 'summary' };
         cfg.logging.file_enabled = process.env.LOG_FILE_ENABLED === 'true' || process.env.LOG_FILE_ENABLED === '1';
     }
     if (process.env.LOG_DIR) {
-        if (!cfg.logging) cfg.logging = { file_enabled: false, dir: './logs', max_days: 7 };
+        if (!cfg.logging) cfg.logging = { file_enabled: false, dir: './logs', max_days: 7, persist_mode: 'summary' };
         cfg.logging.dir = process.env.LOG_DIR;
+    }
+    if (process.env.LOG_PERSIST_MODE) {
+        if (!cfg.logging) cfg.logging = { file_enabled: false, dir: './logs', max_days: 7, persist_mode: 'summary' };
+        cfg.logging.persist_mode = process.env.LOG_PERSIST_MODE === 'full'
+            ? 'full'
+            : process.env.LOG_PERSIST_MODE === 'compact'
+                ? 'compact'
+                : 'summary';
+    }
+    if (process.env.TOOLS_PASSTHROUGH !== undefined) {
+        if (!cfg.tools) cfg.tools = { schemaMode: 'full', descriptionMaxLength: 0 };
+        cfg.tools.passthrough = process.env.TOOLS_PASSTHROUGH === 'true' || process.env.TOOLS_PASSTHROUGH === '1';
+    }
+    if (process.env.TOOLS_DISABLED !== undefined) {
+        if (!cfg.tools) cfg.tools = { schemaMode: 'full', descriptionMaxLength: 0 };
+        cfg.tools.disabled = process.env.TOOLS_DISABLED === 'true' || process.env.TOOLS_DISABLED === '1';
     }
     // 响应内容清洗环境变量覆盖
     if (process.env.SANITIZE_RESPONSE !== undefined) {

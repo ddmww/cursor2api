@@ -9,15 +9,16 @@ services:
     ports:
       - "3010:3010"
     volumes:
-      # 挂载配置文件（可选）——先从 config.yaml.example 复制一份: cp config.yaml.example config.yaml
-      # 修改后只需 docker compose restart 即可生效；不挂载则使用内置默认值 + 环境变量
-      - ./config.yaml:/app/config.yaml:ro
-      # 日志持久化目录（需要在 config.yaml 或环境变量中开启 logging.file_enabled）
-      - ./logs:/app/logs
+      # 推荐统一将后台可写配置和日志都落到 ./data
+      - ./data:/app/data
     environment:
       - NODE_ENV=production
+      - CONFIG_PATH=/app/data/config.yaml
       - PORT=3010
       - TIMEOUT=120
+      - LOG_FILE_ENABLED=true
+      - LOG_DIR=/app/data/logs
+      # - LOG_PERSIST_MODE=summary
       # ⚠️ 部署到海外机器无需代理，如果在国内云，取消注释并填入你的本机 http/socks 代理
       # - PROXY=http://host.docker.internal:7890
 
@@ -40,16 +41,20 @@ services:
       # - MAX_AUTO_CONTINUE=0          # 截断后自动续写次数，0=禁用(默认)
       # - MAX_HISTORY_MESSAGES=-1      # 历史消息条数上限，-1=不限制
 
-      # ── 日志持久化 ──
-      # - LOG_FILE_ENABLED=true
-      # - LOG_DIR=./logs
-
       # ── 浏览器指纹（base64 JSON） ──
       # - FP=eyJ1c2VyQWdlbnQiOiIuLi4ifQ==
 
       # ── Vision 图片处理 ──
       # 默认使用本地 OCR（零配置），如需外部 Vision API 请在 config.yaml 中修改 vision.mode 为 'api'
       # 并配置 vision.base_url / vision.api_key / vision.model
+
+      # ── 工具透传模式（推荐 Roo Code / Cline 等非 Claude Code 客户端） ──
+      # 开启后跳过 few-shot 注入，直接嵌入工具定义，减少身份冲突
+      # - TOOLS_PASSTHROUGH=true
+
+      # ── 工具禁用模式（极致省上下文） ──
+      # 完全不注入工具定义和 few-shot，模型凭训练记忆调用工具
+      # - TOOLS_DISABLED=true
 
       # ── 响应内容清洗 ──
       # 开启后会将响应中 Cursor 身份引用替换为 Claude（默认关闭）

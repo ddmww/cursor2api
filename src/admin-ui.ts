@@ -31,6 +31,8 @@ interface EditableYamlConfig {
     tools: {
         schema_mode: 'compact' | 'full' | 'names_only';
         description_max_length: number;
+        passthrough: boolean;
+        disabled: boolean;
         include_only: StringList;
         exclude: StringList;
     };
@@ -51,6 +53,7 @@ interface EditableYamlConfig {
         file_enabled: boolean;
         dir: string;
         max_days: number;
+        persist_mode: 'compact' | 'full' | 'summary';
     };
 }
 
@@ -71,6 +74,8 @@ const LIVE_RELOAD_FIELDS = [
     'compression.early_msg_max_chars',
     'tools.schema_mode',
     'tools.description_max_length',
+    'tools.passthrough',
+    'tools.disabled',
     'tools.include_only',
     'tools.exclude',
     'sanitize_response',
@@ -85,6 +90,7 @@ const LIVE_RELOAD_FIELDS = [
     'logging.file_enabled',
     'logging.dir',
     'logging.max_days',
+    'logging.persist_mode',
 ];
 
 const ENV_OVERRIDE_MAP: Record<string, string> = {
@@ -98,8 +104,11 @@ const ENV_OVERRIDE_MAP: Record<string, string> = {
     'thinking.enabled': 'THINKING_ENABLED',
     'compression.enabled': 'COMPRESSION_ENABLED',
     'compression.level': 'COMPRESSION_LEVEL',
+    'tools.passthrough': 'TOOLS_PASSTHROUGH',
+    'tools.disabled': 'TOOLS_DISABLED',
     'logging.file_enabled': 'LOG_FILE_ENABLED',
     'logging.dir': 'LOG_DIR',
+    'logging.persist_mode': 'LOG_PERSIST_MODE',
     sanitize_response: 'SANITIZE_RESPONSE',
     'fingerprint.user_agent': 'FP',
 };
@@ -212,6 +221,8 @@ function getDefaultEditableConfig(): EditableYamlConfig {
         tools: {
             schema_mode: 'full',
             description_max_length: 0,
+            passthrough: false,
+            disabled: false,
             include_only: [],
             exclude: [],
         },
@@ -232,6 +243,7 @@ function getDefaultEditableConfig(): EditableYamlConfig {
             file_enabled: false,
             dir: './logs',
             max_days: 7,
+            persist_mode: 'summary',
         },
     };
 }
@@ -285,6 +297,8 @@ function readEditableConfigFile(): { config: EditableYamlConfig; fileExists: boo
                     ? asString(tools.schema_mode, fallback.tools.schema_mode) as EditableYamlConfig['tools']['schema_mode']
                     : fallback.tools.schema_mode,
                 description_max_length: asInt(tools.description_max_length, fallback.tools.description_max_length),
+                passthrough: asBoolean(tools.passthrough, fallback.tools.passthrough),
+                disabled: asBoolean(tools.disabled, fallback.tools.disabled),
                 include_only: asStringList(tools.include_only),
                 exclude: asStringList(tools.exclude),
             },
@@ -307,6 +321,9 @@ function readEditableConfigFile(): { config: EditableYamlConfig; fileExists: boo
                 file_enabled: asBoolean(logging.file_enabled, fallback.logging.file_enabled),
                 dir: asString(logging.dir, fallback.logging.dir),
                 max_days: asInt(logging.max_days, fallback.logging.max_days),
+                persist_mode: ['compact', 'full', 'summary'].includes(asString(logging.persist_mode, fallback.logging.persist_mode))
+                    ? asString(logging.persist_mode, fallback.logging.persist_mode) as EditableYamlConfig['logging']['persist_mode']
+                    : fallback.logging.persist_mode,
             },
         },
     };
@@ -438,6 +455,8 @@ function validateConfig(input: unknown): { config?: EditableYamlConfig; errors: 
     if (!Number.isInteger(normalized.tools.description_max_length) || normalized.tools.description_max_length < 0) {
         errors['tools.description_max_length'] = 'tools.description_max_length 必须是非负整数。';
     }
+    normalized.tools.passthrough = asBoolean(tools.passthrough, normalized.tools.passthrough);
+    normalized.tools.disabled = asBoolean(tools.disabled, normalized.tools.disabled);
     normalized.tools.include_only = asStringList(tools.include_only);
     normalized.tools.exclude = asStringList(tools.exclude);
 
@@ -477,6 +496,10 @@ function validateConfig(input: unknown): { config?: EditableYamlConfig; errors: 
     if (!Number.isInteger(normalized.logging.max_days) || normalized.logging.max_days <= 0) {
         errors['logging.max_days'] = 'logging.max_days 必须是正整数。';
     }
+    normalized.logging.persist_mode = asString(logging.persist_mode, normalized.logging.persist_mode) as EditableYamlConfig['logging']['persist_mode'];
+    if (!['compact', 'full', 'summary'].includes(normalized.logging.persist_mode)) {
+        errors['logging.persist_mode'] = 'logging.persist_mode 只能是 compact、full 或 summary。';
+    }
 
     if (Object.keys(errors).length > 0) {
         return { errors };
@@ -503,6 +526,8 @@ function writeEditableConfig(config: EditableYamlConfig): void {
     setNumberOrDelete(doc, ['compression', 'early_msg_max_chars'], config.compression.early_msg_max_chars, 4000);
     doc.setIn(['tools', 'schema_mode'], config.tools.schema_mode);
     doc.setIn(['tools', 'description_max_length'], config.tools.description_max_length);
+    doc.setIn(['tools', 'passthrough'], config.tools.passthrough);
+    doc.setIn(['tools', 'disabled'], config.tools.disabled);
     setOptionalStringList(doc, ['tools', 'include_only'], config.tools.include_only);
     setOptionalStringList(doc, ['tools', 'exclude'], config.tools.exclude);
 
@@ -523,6 +548,7 @@ function writeEditableConfig(config: EditableYamlConfig): void {
     doc.setIn(['logging', 'file_enabled'], config.logging.file_enabled);
     doc.setIn(['logging', 'dir'], config.logging.dir);
     doc.setIn(['logging', 'max_days'], config.logging.max_days);
+    doc.setIn(['logging', 'persist_mode'], config.logging.persist_mode);
 
     const tmpPath = CONFIG_FILE_PATH + '.tmp';
     writeFileSync(tmpPath, String(doc), 'utf-8');

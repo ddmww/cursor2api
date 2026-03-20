@@ -27,6 +27,8 @@ const CONFIG_GROUPS=[
   {id:'tools',title:'工具处理',fields:[
     {path:'tools.schema_mode',label:'Schema 模式',type:'select',help:'compact/full/names_only。',options:[['compact','compact'],['full','full'],['names_only','names_only']]},
     {path:'tools.description_max_length',label:'描述截断长度',type:'number',help:'0 表示不截断。',min:0},
+    {path:'tools.passthrough',label:'工具透传模式',type:'checkbox',help:'跳过 few-shot 注入，直接嵌入原始工具 JSON。'},
+    {path:'tools.disabled',label:'禁用工具注入',type:'checkbox',help:'完全不注入工具定义与 few-shot。'},
     {path:'tools.include_only',label:'工具白名单',type:'list',help:'每行一个工具名。',mono:true,rows:4},
     {path:'tools.exclude',label:'工具黑名单',type:'list',help:'每行一个工具名。',mono:true,rows:4}
   ]},
@@ -41,7 +43,8 @@ const CONFIG_GROUPS=[
   {id:'logging',title:'日志',fields:[
     {path:'logging.file_enabled',label:'启用文件日志',type:'checkbox',help:'开启后写入 JSONL 并在重启后恢复。'},
     {path:'logging.dir',label:'日志目录',type:'text',help:'容器部署常用 /app/logs。',mono:true,placeholder:'./logs'},
-    {path:'logging.max_days',label:'日志保留天数',type:'number',help:'超过该天数会自动清理。',min:1}
+    {path:'logging.max_days',label:'日志保留天数',type:'number',help:'超过该天数会自动清理。',min:1},
+    {path:'logging.persist_mode',label:'落盘模式',type:'select',help:'compact/full/summary。',options:[['summary','summary'],['compact','compact'],['full','full']]}
   ]},
   {id:'fingerprint',title:'指纹',fields:[
     {path:'fingerprint.user_agent',label:'User-Agent',type:'textarea',help:'若环境变量 FP 生效，这里会被覆盖。',mono:true,rows:4,full:true}
@@ -94,7 +97,7 @@ function renderOverviewCards(){
   const cards=[
     ['当前模型',configData?.cursor_model||'-','运行时默认使用的模型。'],
     ['后台鉴权',configMeta?.authConfigured?'已启用 auth_tokens':'未启用 auth_tokens','未启用时公网风险较高。'],
-    ['日志模式',configData?.logging?.file_enabled?('文件 → '+configData.logging.dir):'仅内存','控制台实时日志不受影响。'],
+    ['日志模式',configData?.logging?.file_enabled?('文件('+configData.logging.persist_mode+') → '+configData.logging.dir):'仅内存','控制台实时日志不受影响。'],
     ['配置文件',configMeta?.fileExists?'config.yaml':'首次保存会创建 config.yaml','后台只写 config.yaml。'],
     ['ENV 覆盖',String(configMeta?.overriddenFields?.length||0),'这些字段保存后可能不会立刻改变运行值。'],
     ['最近请求',document.getElementById('sT').textContent||'0','使用顶部统计同步展示。'],
@@ -142,7 +145,7 @@ function renderConfig(){
   document.getElementById('configSummary').innerHTML=[
     ['配置文件',configMeta.fileExists?'config.yaml':'首次保存会创建 config.yaml'],
     ['鉴权状态',configMeta.authConfigured?'已启用 auth_tokens':'未启用 auth_tokens'],
-    ['日志模式',configData.logging.file_enabled?('文件 → '+configData.logging.dir):'仅内存'],
+    ['日志模式',configData.logging.file_enabled?('文件('+configData.logging.persist_mode+') → '+configData.logging.dir):'仅内存'],
     ['ENV 覆盖',String(configMeta.overriddenFields.length)+' 个字段'],
   ].map(([label,value])=>'<div class="summary-chip"><div class="label">'+escAdmin(label)+'</div><div class="value">'+escAdmin(value)+'</div></div>').join('');
   document.getElementById('configGroups').innerHTML=CONFIG_GROUPS.map(group=>'<section class="config-group" id="group-'+group.id+'"><div class="config-group-header"><h3>'+escAdmin(group.title)+'</h3></div><div class="field-grid">'+group.fields.map(renderField).join('')+'</div></section>').join('');

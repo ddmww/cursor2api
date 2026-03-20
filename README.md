@@ -1,8 +1,8 @@
-# Cursor2API v2.7.5
+# Cursor2API v2.7.6
 
 将 Cursor 文档页免费 AI 对话接口代理转换为 **Anthropic Messages API** 和 **OpenAI Chat Completions API**，支持 **Claude Code** 和 **Cursor IDE** 使用。
 
-> ⚠️ **版本说明**：当前 v2.7.5 新增常量集中管理、自定义拒绝规则、响应清洗开关，代码可维护性大幅提升。
+> ⚠️ **版本说明**：当前 fork 已同步上游 v2.7.6，并保留 `/admin` 统一后台、GHCR 发布和 `/app/data` 持久化部署能力。
 
 ## 原理
 
@@ -143,7 +143,7 @@ git remote -v
 
 ```text
 ghcr.io/ddmww/cursor2api:latest
-ghcr.io/ddmww/cursor2api:v2.7.5
+ghcr.io/ddmww/cursor2api:v2.7.6
 ```
 
 如果你只想拉镜像运行，不需要本地构建，直接使用仓库内的 `docker-compose.ghcr.yml`：
@@ -171,9 +171,9 @@ volumes:
 
 如果启用了 `logging.file_enabled: true` 或 `LOG_FILE_ENABLED=true`，重启容器后仍会从 `cursor2api_data` 中恢复日志。
 
-## 🖥️ 日志查看器
+## 🖥️ 统一后台
 
-启动服务后访问 `http://localhost:3010/logs` 即可打开全链路日志查看器。
+启动服务后访问 `http://localhost:3010/admin` 即可打开统一后台，包含总览、日志和配置三个分区。旧地址 `http://localhost:3010/logs` 会自动跳转到 `/admin?tab=logs`。
 
 ### 功能特性
 

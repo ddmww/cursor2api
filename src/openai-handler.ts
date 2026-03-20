@@ -27,7 +27,7 @@ import type {
 import { convertToCursorRequest, parseToolCalls, hasToolCalls } from './converter.js';
 import { sendCursorRequest, sendCursorRequestFull } from './cursor-client.js';
 import { getConfig } from './config.js';
-import { createRequestLogger } from './logger.js';
+import { createRequestLogger, type RequestLogger } from './logger.js';
 import { createIncrementalTextStreamer, hasLeadingThinking, splitLeadingThinkingBlocks, stripThinkingTags } from './streaming-text.js';
 import {
     autoContinueCursorToolResponseFull,
@@ -488,11 +488,12 @@ export async function handleOpenAIChatCompletions(req: Request, res: Response): 
 
         // Step 2: Anthropic → Cursor 格式（复用现有管道）
         const cursorReq = await convertToCursorRequest(anthropicReq);
+        log.recordCursorRequest(cursorReq);
 
         if (body.stream) {
-            await handleOpenAIStream(res, cursorReq, body, anthropicReq);
+            await handleOpenAIStream(res, cursorReq, body, anthropicReq, log);
         } else {
-            await handleOpenAINonStream(res, cursorReq, body, anthropicReq);
+            await handleOpenAINonStream(res, cursorReq, body, anthropicReq, log);
         }
     } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
@@ -609,6 +610,7 @@ async function handleOpenAIIncrementalTextStream(
     body: OpenAIChatRequest,
     anthropicReq: AnthropicRequest,
     streamMeta: { id: string; created: number; model: string },
+    log: RequestLogger,
 ): Promise<void> {
     let activeCursorReq = cursorReq;
     let retryCount = 0;
@@ -739,6 +741,16 @@ async function handleOpenAIIncrementalTextStream(
         usage: buildOpenAIUsage(anthropicReq, streamer.hasSentText() ? (finalVisibleText || finalRawResponse) : finalTextToSend),
     });
 
+    log.recordRawResponse(finalRawResponse);
+    if (finalReasoningContent) {
+        log.recordThinking(finalReasoningContent);
+    }
+    const finalRecordedResponse = streamer.hasSentText()
+        ? sanitizeResponse(finalVisibleText || finalRawResponse)
+        : finalTextToSend;
+    log.recordFinalResponse(finalRecordedResponse);
+    log.complete(finalRecordedResponse.length, 'stop');
+
     res.write('data: [DONE]\n\n');
     res.end();
 }
@@ -750,6 +762,7 @@ async function handleOpenAIStream(
     cursorReq: CursorChatRequest,
     body: OpenAIChatRequest,
     anthropicReq: AnthropicRequest,
+    log: RequestLogger,
 ): Promise<void> {
     res.writeHead(200, {
         'Content-Type': 'text/event-stream',
@@ -790,7 +803,7 @@ async function handleOpenAIStream(
 
     try {
         if (!hasTools && (!body.response_format || body.response_format.type === 'text')) {
-            await handleOpenAIIncrementalTextStream(res, cursorReq, body, anthropicReq, { id, created, model });
+            await handleOpenAIIncrementalTextStream(res, cursorReq, body, anthropicReq, { id, created, model }, log);
             return;
         }
 
@@ -973,6 +986,8 @@ async function handleOpenAIStream(
 
             if (toolCalls.length > 0) {
                 finishReason = 'tool_calls';
+                log.recordToolCalls(toolCalls);
+                log.updateSummary({ toolCallsDetected: toolCalls.length });
 
                 // 发送工具调用前的残余文本 — 如果混合流式已发送则跳过
                 if (!hybridTextSent) {
@@ -1083,10 +1098,18 @@ async function handleOpenAIStream(
             usage: buildOpenAIUsage(anthropicReq, fullResponse),
         });
 
+        log.recordRawResponse(fullResponse);
+        if (reasoningContent) {
+            log.recordThinking(reasoningContent);
+        }
+        log.recordFinalResponse(fullResponse);
+        log.complete(fullResponse.length, finishReason);
+
         res.write('data: [DONE]\n\n');
 
     } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
+        log.fail(message);
         writeOpenAISSE(res, {
             id, object: 'chat.completion.chunk', created, model,
             choices: [{
@@ -1108,6 +1131,7 @@ async function handleOpenAINonStream(
     cursorReq: CursorChatRequest,
     body: OpenAIChatRequest,
     anthropicReq: AnthropicRequest,
+    log: RequestLogger,
 ): Promise<void> {
     let activeCursorReq = cursorReq;
     let fullText = await sendCursorRequestFull(activeCursorReq);
@@ -1172,6 +1196,8 @@ async function handleOpenAINonStream(
 
         if (parsed.toolCalls.length > 0) {
             finishReason = 'tool_calls';
+            log.recordToolCalls(parsed.toolCalls);
+            log.updateSummary({ toolCallsDetected: parsed.toolCalls.length });
             // 清洗拒绝文本
             let cleanText = parsed.cleanText;
             if (isRefusal(cleanText)) {
@@ -1224,6 +1250,13 @@ async function handleOpenAINonStream(
     };
 
     res.json(response);
+
+    log.recordRawResponse(fullText);
+    if (reasoningContent) {
+        log.recordThinking(reasoningContent);
+    }
+    log.recordFinalResponse(fullText);
+    log.complete(fullText.length, finishReason);
 }
 
 // ==================== 工具函数 ====================
@@ -1300,17 +1333,39 @@ function buildResponseObject(
  * 而非 data: {"object":"chat.completion.chunk",...} 格式
  */
 export async function handleOpenAIResponses(req: Request, res: Response): Promise<void> {
-    try {
-        const body = req.body;
-        const isStream = (body.stream as boolean) ?? true;
+    const body = req.body as Record<string, unknown>;
+    const isStream = (body.stream as boolean) ?? true;
+    const chatBody = responsesToChatCompletions(body);
+    const log = createRequestLogger({
+        method: req.method,
+        path: req.path,
+        model: chatBody.model,
+        stream: isStream,
+        hasTools: (chatBody.tools?.length ?? 0) > 0,
+        toolCount: chatBody.tools?.length ?? 0,
+        messageCount: chatBody.messages?.length ?? 0,
+        apiFormat: 'responses',
+    });
+    log.startPhase('receive', '接收请求');
+    log.recordOriginalRequest(body);
+    log.info('OpenAI', 'receive', '收到 OpenAI Responses 请求', {
+        model: chatBody.model,
+        stream: isStream,
+        toolCount: chatBody.tools?.length ?? 0,
+        messageCount: chatBody.messages?.length ?? 0,
+    });
 
+    try {
         // Step 1: 转换请求格式 Responses → Chat Completions → Anthropic → Cursor
-        const chatBody = responsesToChatCompletions(body);
+        log.startPhase('convert', '格式转换 (Responses→Chat→Anthropic)');
         const anthropicReq = convertToAnthropicRequest(chatBody);
         const cursorReq = await convertToCursorRequest(anthropicReq);
+        log.endPhase();
+        log.recordCursorRequest(cursorReq);
 
         // 身份探针拦截
         if (isIdentityProbe(anthropicReq)) {
+            log.intercepted('身份探针拦截 (Responses)');
             const mockText = "I am Claude, an advanced AI programming assistant created by Anthropic. I am ready to help you write code, debug, and answer your technical questions.";
             if (isStream) {
                 return handleResponsesStreamMock(res, body, mockText);
@@ -1320,12 +1375,13 @@ export async function handleOpenAIResponses(req: Request, res: Response): Promis
         }
 
         if (isStream) {
-            await handleResponsesStream(res, cursorReq, body, anthropicReq);
+            await handleResponsesStream(res, cursorReq, body, anthropicReq, log);
         } else {
-            await handleResponsesNonStream(res, cursorReq, body, anthropicReq);
+            await handleResponsesNonStream(res, cursorReq, body, anthropicReq, log);
         }
     } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
+        log.fail(message);
         console.error(`[OpenAI] /v1/responses 处理失败:`, message);
         const status = err instanceof OpenAIRequestError ? err.status : 500;
         const type = err instanceof OpenAIRequestError ? err.type : 'server_error';
@@ -1471,6 +1527,7 @@ async function handleResponsesStream(
     cursorReq: CursorChatRequest,
     body: Record<string, unknown>,
     anthropicReq: AnthropicRequest,
+    log: RequestLogger,
 ): Promise<void> {
     res.writeHead(200, {
         'Content-Type': 'text/event-stream',
@@ -1482,6 +1539,7 @@ async function handleResponsesStream(
     const respId = responsesId();
     const model = (body.model as string) || 'gpt-4';
     const hasTools = (anthropicReq.tools?.length ?? 0) > 0;
+    let toolCallsDetected = 0;
 
     // 缓冲完整响应再处理（复用 Chat Completions 的逻辑）
     let fullResponse = '';
@@ -1557,6 +1615,9 @@ async function handleResponsesStream(
             const { toolCalls, cleanText } = parseToolCalls(fullResponse);
 
             if (toolCalls.length > 0) {
+                toolCallsDetected = toolCalls.length;
+                log.recordToolCalls(toolCalls);
+                log.updateSummary({ toolCallsDetected: toolCalls.length });
                 // 1. response.created + response.in_progress
                 writeResponsesSSE(res, 'response.created', buildResponseObject(respId, model, 'in_progress', []));
                 writeResponsesSSE(res, 'response.in_progress', buildResponseObject(respId, model, 'in_progress', []));
@@ -1658,8 +1719,12 @@ async function handleResponsesStream(
             const msgItemId = responsesItemId();
             emitResponsesTextStream(res, respId, msgItemId, model, fullResponse, 0, usage);
         }
+        log.recordRawResponse(fullResponse);
+        log.recordFinalResponse(fullResponse);
+        log.complete(fullResponse.length, toolCallsDetected > 0 ? 'tool_calls' : 'stop');
     } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
+        log.fail(message);
         // 尝试发送错误后的 response.completed，确保 Codex 不会等待超时
         try {
             const errorText = `[Error: ${message}]`;
@@ -1707,6 +1772,7 @@ async function handleResponsesNonStream(
     cursorReq: CursorChatRequest,
     body: Record<string, unknown>,
     anthropicReq: AnthropicRequest,
+    log: RequestLogger,
 ): Promise<void> {
     let activeCursorReq = cursorReq;
     let fullText = await sendCursorRequestFull(activeCursorReq);
@@ -1752,9 +1818,13 @@ async function handleResponsesNonStream(
     const usage = { input_tokens: inputTokens, output_tokens: outputTokens, total_tokens: inputTokens + outputTokens };
 
     const output: Record<string, unknown>[] = [];
+    let toolCallsDetected = 0;
 
     if (hasTools && hasToolCalls(fullText)) {
         const { toolCalls, cleanText } = parseToolCalls(fullText);
+        toolCallsDetected = toolCalls.length;
+        log.recordToolCalls(toolCalls);
+        log.updateSummary({ toolCallsDetected: toolCalls.length });
         for (const tc of toolCalls) {
             output.push({
                 id: responsesItemId(),
@@ -1786,6 +1856,10 @@ async function handleResponsesNonStream(
     }
 
     res.json(buildResponseObject(respId, model, 'completed', output, usage));
+
+    log.recordRawResponse(fullText);
+    log.recordFinalResponse(fullText);
+    log.complete(fullText.length, toolCallsDetected > 0 ? 'tool_calls' : 'stop');
 }
 
 /**

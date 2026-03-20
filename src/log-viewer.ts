@@ -79,6 +79,10 @@ export function serveLogViewerLogin(_req: Request, res: Response): void {
     res.send(readPublicFile('login.html'));
 }
 
+export function serveVueApp(_req: Request, res: Response): void {
+    res.sendFile(join(publicDir, 'vue', 'index.html'));
+}
+
 /** 静态文件路由 - CSS/JS */
 export function servePublicFile(req: Request, res: Response): void {
     const file = req.params[0]; // e.g. "logs.css" or "logs.js"

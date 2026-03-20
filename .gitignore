@@ -47,3 +47,15 @@ test/ctf-*-results.json
 
 # Claude local settings
 .claude/
+
+# Vue UI build output and dependencies
+public/vue/
+vue-ui/node_modules/
+cursor2claude 重构计划.md
+CLAUDE.md
+config-dev.yaml
+config-local.yaml
+deploy-cursor2api.sh
+deploy-gost.sh
+docker-compose-dev.yml
+docker-compose-local.yml

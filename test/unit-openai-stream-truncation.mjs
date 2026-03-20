@@ -63,11 +63,9 @@ function createSseResponse(deltas) {
     });
 }
 
-const pending = [];
-
 console.log('\n📦 OpenAI 流式截断回归\n');
 
-pending.push((async () => {
+await (async () => {
     const originalFetch = global.fetch;
     const fetchCalls = [];
 
@@ -127,9 +125,9 @@ pending.push((async () => {
     } finally {
         global.fetch = originalFetch;
     }
-})());
+})();
 
-pending.push((async () => {
+await (async () => {
     const originalFetch = global.fetch;
     let fetchCount = 0;
 
@@ -165,9 +163,7 @@ pending.push((async () => {
     } finally {
         global.fetch = originalFetch;
     }
-})());
-
-await Promise.all(pending);
+})();
 
 console.log(`\n结果: ${passed} 通过 / ${failed} 失败 / ${passed + failed} 总计\n`);
 

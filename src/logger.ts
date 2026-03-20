@@ -80,6 +80,14 @@ export interface RequestPayload {
     retryResponses?: Array<{ attempt: number; response: string; reason: string }>;
     /** 每次续写的原始响应 */
     continuationResponses?: Array<{ index: number; response: string; dedupedLength: number }>;
+    /** summary 模式：最后一个用户问题 */
+    question?: string;
+    /** summary 模式：最终回答摘要 */
+    answer?: string;
+    /** summary 模式：回答类型 */
+    answerType?: 'text' | 'tool_calls' | 'empty';
+    /** summary 模式：工具调用名称列表 */
+    toolCallNames?: string[];
 }
 
 export interface RequestSummary {
@@ -133,10 +141,29 @@ function shortId(): string {
 
 // ==================== 日志文件持久化 ====================
 
+const DEFAULT_PERSIST_MODE: 'compact' | 'full' | 'summary' = 'summary';
+const DISK_SYSTEM_PROMPT_CHARS = 2000;
+const DISK_MESSAGE_PREVIEW_CHARS = 3000;
+const DISK_CURSOR_MESSAGE_PREVIEW_CHARS = 2000;
+const DISK_RESPONSE_CHARS = 8000;
+const DISK_THINKING_CHARS = 4000;
+const DISK_TOOL_DESC_CHARS = 500;
+const DISK_RETRY_CHARS = 2000;
+const DISK_TOOLCALL_STRING_CHARS = 1200;
+const DISK_MAX_ARRAY_ITEMS = 20;
+const DISK_MAX_OBJECT_DEPTH = 5;
+const DISK_SUMMARY_QUESTION_CHARS = 2000;
+const DISK_SUMMARY_ANSWER_CHARS = 4000;
+
 function getLogDir(): string | null {
     const cfg = getConfig();
     if (!cfg.logging?.file_enabled) return null;
     return cfg.logging.dir || './logs';
+}
+
+function getPersistMode(): 'compact' | 'full' | 'summary' {
+    const mode = getConfig().logging?.persist_mode;
+    return mode === 'full' || mode === 'summary' || mode === 'compact' ? mode : DEFAULT_PERSIST_MODE;
 }
 
 function getLogFilePath(): string | null {
@@ -153,13 +180,256 @@ function ensureLogDir(): void {
     }
 }
 
+function truncateMiddle(text: string, maxChars: number): string {
+    if (!text || text.length <= maxChars) return text;
+    const omitted = text.length - maxChars;
+    const marker = `\n...[截断 ${omitted} chars]...\n`;
+    const remain = Math.max(16, maxChars - marker.length);
+    const head = Math.ceil(remain * 0.7);
+    const tail = Math.max(8, remain - head);
+    return text.slice(0, head) + marker + text.slice(text.length - tail);
+}
+
+function compactUnknownValue(value: unknown, maxStringChars = DISK_TOOLCALL_STRING_CHARS, depth = 0): unknown {
+    if (value === null || value === undefined) return value;
+    if (typeof value === 'string') return truncateMiddle(value, maxStringChars);
+    if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') return value;
+    if (depth >= DISK_MAX_OBJECT_DEPTH) {
+        if (Array.isArray(value)) return `[array(${value.length})]`;
+        return '[object]';
+    }
+    if (Array.isArray(value)) {
+        const items = value.slice(0, DISK_MAX_ARRAY_ITEMS)
+            .map(item => compactUnknownValue(item, maxStringChars, depth + 1));
+        if (value.length > DISK_MAX_ARRAY_ITEMS) {
+            items.push(`[... ${value.length - DISK_MAX_ARRAY_ITEMS} more items]`);
+        }
+        return items;
+    }
+    if (typeof value === 'object') {
+        const result: Record<string, unknown> = {};
+        for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+            const limit = /content|text|arguments|description|prompt|response|reasoning/i.test(key)
+                ? maxStringChars
+                : Math.min(maxStringChars, 400);
+            result[key] = compactUnknownValue(entry, limit, depth + 1);
+        }
+        return result;
+    }
+    return String(value);
+}
+
+function extractTextParts(value: unknown): string {
+    if (typeof value === 'string') return value;
+    if (!value) return '';
+    if (Array.isArray(value)) {
+        return value
+            .map(item => extractTextParts(item))
+            .filter(Boolean)
+            .join('\n');
+    }
+    if (typeof value === 'object') {
+        const record = value as Record<string, unknown>;
+        if (typeof record.text === 'string') return record.text;
+        if (typeof record.output === 'string') return record.output;
+        if (typeof record.content === 'string') return record.content;
+        if (record.content !== undefined) return extractTextParts(record.content);
+        if (record.input !== undefined) return extractTextParts(record.input);
+    }
+    return '';
+}
+
+function extractLastUserQuestion(summary: RequestSummary, payload: RequestPayload): string | undefined {
+    const lastUser = payload.messages?.slice().reverse().find(m => m.role === 'user' && m.contentPreview?.trim());
+    if (lastUser?.contentPreview) {
+        return truncateMiddle(lastUser.contentPreview, DISK_SUMMARY_QUESTION_CHARS);
+    }
+
+    const original = payload.originalRequest && typeof payload.originalRequest === 'object' && !Array.isArray(payload.originalRequest)
+        ? payload.originalRequest as Record<string, unknown>
+        : undefined;
+    if (!original) {
+        return summary.title ? truncateMiddle(summary.title, DISK_SUMMARY_QUESTION_CHARS) : undefined;
+    }
+
+    if (Array.isArray(original.messages)) {
+        for (let i = original.messages.length - 1; i >= 0; i--) {
+            const item = original.messages[i] as Record<string, unknown>;
+            if (item?.role === 'user') {
+                const text = extractTextParts(item.content);
+                if (text.trim()) return truncateMiddle(text, DISK_SUMMARY_QUESTION_CHARS);
+            }
+        }
+    }
+
+    if (typeof original.input === 'string' && original.input.trim()) {
+        return truncateMiddle(original.input, DISK_SUMMARY_QUESTION_CHARS);
+    }
+    if (Array.isArray(original.input)) {
+        for (let i = original.input.length - 1; i >= 0; i--) {
+            const item = original.input[i] as Record<string, unknown>;
+            if (!item) continue;
+            const role = typeof item.role === 'string' ? item.role : 'user';
+            if (role === 'user') {
+                const text = extractTextParts(item.content ?? item.input ?? item);
+                if (text.trim()) return truncateMiddle(text, DISK_SUMMARY_QUESTION_CHARS);
+            }
+        }
+    }
+
+    return summary.title ? truncateMiddle(summary.title, DISK_SUMMARY_QUESTION_CHARS) : undefined;
+}
+
+function extractToolCallNames(payload: RequestPayload): string[] {
+    if (!payload.toolCalls?.length) return [];
+    return payload.toolCalls
+        .map(call => {
+            if (call && typeof call === 'object') {
+                const record = call as Record<string, unknown>;
+                if (typeof record.name === 'string') return record.name;
+                const fn = record.function;
+                if (fn && typeof fn === 'object' && typeof (fn as Record<string, unknown>).name === 'string') {
+                    return (fn as Record<string, unknown>).name as string;
+                }
+            }
+            return '';
+        })
+        .filter(Boolean);
+}
+
+function buildSummaryPayload(summary: RequestSummary, payload: RequestPayload): RequestPayload {
+    const question = extractLastUserQuestion(summary, payload);
+    const answerText = payload.finalResponse || payload.rawResponse || '';
+    const toolCallNames = extractToolCallNames(payload);
+    const answer = answerText
+        ? truncateMiddle(answerText, DISK_SUMMARY_ANSWER_CHARS)
+        : toolCallNames.length > 0
+            ? `[tool_calls] ${toolCallNames.join(', ')}`
+            : undefined;
+
+    return {
+        ...(question ? { question } : {}),
+        ...(answer ? { answer } : {}),
+        answerType: answerText ? 'text' : toolCallNames.length > 0 ? 'tool_calls' : 'empty',
+        ...(toolCallNames.length > 0 ? { toolCallNames } : {}),
+    };
+}
+
+function buildCompactOriginalRequest(summary: RequestSummary, payload: RequestPayload): Record<string, unknown> | undefined {
+    const original = payload.originalRequest && typeof payload.originalRequest === 'object' && !Array.isArray(payload.originalRequest)
+        ? payload.originalRequest as Record<string, unknown>
+        : undefined;
+    const result: Record<string, unknown> = {
+        model: summary.model,
+        stream: summary.stream,
+        apiFormat: summary.apiFormat,
+        messageCount: summary.messageCount,
+        toolCount: summary.toolCount,
+    };
+
+    if (summary.title) result.title = summary.title;
+    if (payload.systemPrompt) result.systemPromptPreview = truncateMiddle(payload.systemPrompt, DISK_SYSTEM_PROMPT_CHARS);
+    if (payload.messages?.some(m => m.hasImages)) result.hasImages = true;
+
+    const lastUser = payload.messages?.slice().reverse().find(m => m.role === 'user');
+    if (lastUser?.contentPreview) {
+        result.lastUserPreview = truncateMiddle(lastUser.contentPreview, 800);
+    }
+
+    if (original) {
+        for (const key of ['temperature', 'top_p', 'max_tokens', 'max_completion_tokens', 'max_output_tokens']) {
+            const value = original[key];
+            if (value !== undefined && typeof value !== 'object') result[key] = value;
+        }
+        if (typeof original.instructions === 'string') {
+            result.instructions = truncateMiddle(original.instructions, 1200);
+        }
+        if (typeof original.system === 'string') {
+            result.system = truncateMiddle(original.system, DISK_SYSTEM_PROMPT_CHARS);
+        }
+    }
+
+    return Object.keys(result).length > 0 ? result : undefined;
+}
+
+function compactPayloadForDisk(summary: RequestSummary, payload: RequestPayload): RequestPayload {
+    const compact: RequestPayload = {};
+
+    if (payload.originalRequest !== undefined) {
+        compact.originalRequest = buildCompactOriginalRequest(summary, payload);
+    }
+    if (payload.systemPrompt) {
+        compact.systemPrompt = truncateMiddle(payload.systemPrompt, DISK_SYSTEM_PROMPT_CHARS);
+    }
+    if (payload.messages?.length) {
+        compact.messages = payload.messages.map(msg => ({
+            ...msg,
+            contentPreview: truncateMiddle(msg.contentPreview, DISK_MESSAGE_PREVIEW_CHARS),
+        }));
+    }
+    if (payload.tools?.length) {
+        compact.tools = payload.tools.map(tool => ({
+            name: tool.name,
+            ...(tool.description ? { description: truncateMiddle(tool.description, DISK_TOOL_DESC_CHARS) } : {}),
+        }));
+    }
+    if (payload.cursorRequest !== undefined) {
+        compact.cursorRequest = payload.cursorRequest;
+    }
+    if (payload.cursorMessages?.length) {
+        compact.cursorMessages = payload.cursorMessages.map(msg => ({
+            ...msg,
+            contentPreview: truncateMiddle(msg.contentPreview, DISK_CURSOR_MESSAGE_PREVIEW_CHARS),
+        }));
+    }
+
+    const compactFinalResponse = payload.finalResponse
+        ? truncateMiddle(payload.finalResponse, DISK_RESPONSE_CHARS)
+        : undefined;
+    const compactRawResponse = payload.rawResponse
+        ? truncateMiddle(payload.rawResponse, DISK_RESPONSE_CHARS)
+        : undefined;
+
+    if (compactFinalResponse) compact.finalResponse = compactFinalResponse;
+    if (compactRawResponse && compactRawResponse !== compactFinalResponse) {
+        compact.rawResponse = compactRawResponse;
+    }
+    if (payload.thinkingContent) {
+        compact.thinkingContent = truncateMiddle(payload.thinkingContent, DISK_THINKING_CHARS);
+    }
+    if (payload.toolCalls?.length) {
+        compact.toolCalls = compactUnknownValue(payload.toolCalls) as unknown[];
+    }
+    if (payload.retryResponses?.length) {
+        compact.retryResponses = payload.retryResponses.map(item => ({
+            ...item,
+            response: truncateMiddle(item.response, DISK_RETRY_CHARS),
+            reason: truncateMiddle(item.reason, 300),
+        }));
+    }
+    if (payload.continuationResponses?.length) {
+        compact.continuationResponses = payload.continuationResponses.map(item => ({
+            ...item,
+            response: truncateMiddle(item.response, DISK_RETRY_CHARS),
+        }));
+    }
+
+    return compact;
+}
+
 /** 将已完成的请求写入日志文件 */
 function persistRequest(summary: RequestSummary, payload: RequestPayload): void {
     const filepath = getLogFilePath();
     if (!filepath) return;
     try {
         ensureLogDir();
-        const record = { timestamp: Date.now(), summary, payload };
+        const persistMode = getPersistMode();
+        const persistedPayload = persistMode === 'full'
+            ? payload
+            : persistMode === 'summary'
+                ? buildSummaryPayload(summary, payload)
+                : compactPayloadForDisk(summary, payload);
+        const record = { timestamp: Date.now(), summary, payload: persistedPayload };
         appendFileSync(filepath, JSON.stringify(record) + '\n', 'utf-8');
     } catch (e) {
         console.warn('[Logger] 写入日志文件失败:', e);
@@ -316,7 +586,13 @@ export function createRequestLogger(opts: {
         requestPayloads.delete(oldId);
     }
 
-    const toolInfo = opts.hasTools ? ` tools=${opts.toolCount}` : '';
+    const toolMode = (() => {
+        const cfg = getConfig().tools;
+        if (cfg?.disabled) return '(跳过)';
+        if (cfg?.passthrough) return '(透传)';
+        return '';
+    })();
+    const toolInfo = opts.hasTools ? ` tools=${opts.toolCount}${toolMode}` : '';
     const fmtTag = summary.apiFormat === 'openai' ? ' [OAI]' : summary.apiFormat === 'responses' ? ' [RSP]' : '';
     console.log(`\x1b[36m⟶\x1b[0m [${requestId}] ${opts.method} ${opts.path}${fmtTag} | model=${opts.model} stream=${opts.stream}${toolInfo} msgs=${opts.messageCount}`);
     

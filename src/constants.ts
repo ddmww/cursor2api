@@ -85,6 +85,10 @@ export const REFUSAL_PATTERNS: RegExp[] = [
     /(?:can[.']?t|cannot|unable\s+to)\s+help\s+with\s+(?:this|that)\s+(?:request|question|topic)/i,
     /scoped\s+to\s+(?:answering|helping)/i,
 
+    // ── English: Cursor support assistant context leak (2026-03) ──
+    /currently\s+in\s+(?:the\s+)?Cursor\s+(?:support\s+)?(?:assistant\s+)?context/i,
+    /it\s+appears\s+I['']?m\s+currently\s+in\s+the\s+Cursor/i,
+
     // ── 中文: 身份拒绝 ──
     /我是\s*Cursor\s*的?\s*支持助手/,
     /Cursor\s*的?\s*支持系统/,
@@ -119,6 +123,16 @@ export const REFUSAL_PATTERNS: RegExp[] = [
     /只能用.*?read_file/i,
     /无法调用.*?工具/,
     /(?:仅限于|仅用于).*?(?:查阅|浏览).*?(?:文档|docs)/,
+    // ── 中文: 工具可用性声明 (2026-03 新增) ──
+    /只有.*?读取.*?Cursor.*?工具/,
+    /只有.*?读取.*?文档的工具/,
+    /无法访问.*?本地文件/,
+    /无法.*?执行命令/,
+    /需要在.*?Claude\s*Code/i,
+    /需要.*?CLI.*?环境/i,
+    /当前环境.*?只有.*?工具/,
+    /只有.*?read_file.*?read_dir/i,
+    /只有.*?read_dir.*?read_file/i,
 
     // ── 中文: Cursor 中文界面拒绝措辞 (2026-03 批次) ──
     /只能回答.*(?:Cursor|编辑器).*(?:相关|有关)/,
