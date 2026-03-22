@@ -32,6 +32,7 @@
 - **🆕 response_format 支持** - `json_object` / `json_schema` 格式输出，自动剥离 markdown 包装
 - **🆕 动态工具结果预算** - 根据上下文大小自动调整工具结果截断限制，替代固定 15K
 - **🆕 Vision 独立代理** - 图片 API 单独走代理，Cursor API 保持直连不受影响
+- **🆕 代理池轮询 + 429 故障转移** - 支持 HTTP/mixed 代理池、健康检查、冷却与一次切换重试
 - **🆕 计费头清除** - 自动清除 `x-anthropic-billing-header` 防止注入警告
 - **工具参数自动修复** - 字段名映射 (`file_path` → `path`)、智能引号替换、模糊匹配修复
 - **多模态视觉降级处理** - 内置纯本地 CPU OCR 图片文字提取（零配置免 Key），或支持外接第三方免费视觉大模型 API 解释图片
@@ -74,6 +75,10 @@ cp config.yaml.example config.yaml
 | `compression.enabled` | 压缩开关 | `true` |
 | `compression.level` | 压缩级别 1-3 | `2` (中等) |
 | `proxy` | 全局代理（可选） | 不配置 |
+| `proxy_pool.enabled` | 启用代理池轮询 | `false` |
+| `proxy_pool.urls` | 代理池节点列表（仅 `http/https`） | 空 |
+| `proxy_pool.cooldown_seconds` | 429 / 网络错误冷却秒数 | `30` |
+| `proxy_pool.health_check.*` | 代理池健康检查配置 | 关闭 |
 | `vision.enabled` | 开启视觉拦截 | `true` |
 | `vision.mode` | 视觉模式：`ocr` / `api` | `ocr` |
 | `vision.proxy` | Vision 独立代理 | 不配置 |
@@ -214,7 +219,8 @@ cursor2api/
 │   ├── openai-types.ts     # OpenAI 类型定义（含 response_format）
 │   ├── log-viewer.ts       # 全链路日志 Web UI + 登录鉴权
 │   ├── logger.ts           # 日志收集 + SSE 推送
-│   ├── proxy-agent.ts      # 代理支持（全局 + Vision 独立代理）
+│   ├── proxy-agent.ts      # 代理选择 / 故障切换（池 + 单代理兜底）
+│   ├── proxy-pool.ts       # 代理池状态、健康检查与冷却
 │   └── tool-fixer.ts       # 工具参数自动修复（字段映射 + 智能引号 + 模糊匹配）
 ├── public/
 │   ├── logs.html           # 日志查看器主页面
@@ -305,6 +311,8 @@ AI 按此格式输出 → 我们解析并转换为标准的 Anthropic `tool_use`
 | `LOG_DIR` | 日志文件目录 |
 | `MAX_AUTO_CONTINUE` | 截断自动续写次数 (`0`=禁用) |
 | `SANITIZE_RESPONSE` | 响应内容清洗开关 (`true`/`false`，默认 `false`) |
+
+> 💡 代理池 v1 只支持 `config.yaml` / `/admin` 配置，不提供环境变量列表格式。Mihomo 请暴露 `http://` 或 `https://` 的 mixed / http 入口，`socks5://` 不受支持。
 
 图片处理开关在 `config.yaml` 中控制：
 

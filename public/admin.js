@@ -8,6 +8,14 @@ const CONFIG_GROUPS=[
     {path:'proxy',label:'全局代理',type:'text',help:'例如 http://127.0.0.1:7890。',mono:true,placeholder:'http://127.0.0.1:7890'},
     {path:'cursor_model',label:'Cursor 默认模型',type:'text',help:'请求未传 model 时回退到这里。',mono:true,placeholder:'anthropic/claude-sonnet-4.6'}
   ]},
+  {id:'proxy-pool',title:'代理池',fields:[
+    {path:'proxy_pool.enabled',label:'启用代理池',type:'checkbox',help:'启用后 Cursor 与 Vision 默认优先走池，单独的全局 proxy 仅作为兜底。'},
+    {path:'proxy_pool.urls',label:'代理 URL 列表',type:'list',help:'每行一个 http:// 或 https:// 代理地址。Mihomo 需使用 mixed/http 入口，不支持 socks5://。',mono:true,rows:8,full:true},
+    {path:'proxy_pool.cooldown_seconds',label:'冷却秒数',type:'number',help:'429 或网络错误后，该代理会进入冷却窗口。',min:1},
+    {path:'proxy_pool.health_check.enabled',label:'启用健康检查',type:'checkbox',help:'后台定时探测代理是否可连通。'},
+    {path:'proxy_pool.health_check.interval_seconds',label:'健康检查间隔（秒）',type:'number',help:'默认 60 秒。',min:1},
+    {path:'proxy_pool.health_check.url',label:'健康检查地址',type:'text',help:'只用于探测连通性，不代表 Cursor 配额。',mono:true,placeholder:'http://cp.cloudflare.com/generate_204'}
+  ]},
   {id:'security',title:'鉴权与安全',fields:[
     {path:'auth_tokens',label:'Auth Tokens',type:'list-secret',help:'每行一个 token。为空则 API 与后台开放。',mono:true,rows:4},
     {path:'sanitize_response',label:'响应内容清洗',type:'checkbox',help:'将响应中的 Cursor 身份引用替换为 Claude。'},
@@ -54,7 +62,7 @@ const CONFIG_GROUPS=[
 
 let dashboardTab=new URLSearchParams(window.location.search).get('tab');
 if(!ADMIN_TABS.includes(dashboardTab))dashboardTab='overview';
-let configData=null,configMeta=null,configErrors={},configDirty=false,saveState='clean';
+let configData=null,configMeta=null,configErrors={},configDirty=false,saveState='clean',proxyPoolRuntime=null;
 
 function adminToken(){return localStorage.getItem('cursor2api_token')||''}
 function adminUrl(tab){const p=new URLSearchParams(window.location.search);p.set('tab',tab);const t=adminToken();if(t)p.set('token',t);else p.delete('token');return '/admin?'+p.toString()}
@@ -88,6 +96,15 @@ function renderAlerts(){
   el.innerHTML=warnings.map(w=>'<div class="banner warn">'+escAdmin(w)+'</div>').join('');
 }
 
+function proxyPoolSummary(){
+  const entries=proxyPoolRuntime?.entries||[];
+  const healthEnabled=!!configData?.proxy_pool?.health_check?.enabled;
+  const available=entries.filter(e=>!e.inCooldown&&(!healthEnabled||e.healthy)).length;
+  const cooling=entries.filter(e=>e.inCooldown).length;
+  const unhealthy=entries.filter(e=>!e.healthy).length;
+  return {total:entries.length,available,cooling,unhealthy};
+}
+
 function renderOverview(){
   renderOverviewCards();
   renderOverviewWarnings();
@@ -95,11 +112,13 @@ function renderOverview(){
 }
 
 function renderOverviewCards(){
+  const pool=proxyPoolSummary();
   const cards=[
     ['当前模型',configData?.cursor_model||'-','运行时默认使用的模型。'],
     ['后台鉴权',configMeta?.authConfigured?'已启用 auth_tokens':'未启用 auth_tokens','未启用时公网风险较高。'],
     ['日志模式',configData?.logging?.file_enabled?('文件('+configData.logging.persist_mode+') → '+configData.logging.dir):'仅内存','控制台实时日志不受影响。'],
     ['配置文件',configMeta?.fileExists?'config.yaml':'首次保存会创建 config.yaml','后台只写 config.yaml。'],
+    ['代理池',configData?.proxy_pool?.enabled?('已启用 · '+pool.available+'/'+pool.total+' 可用'):'未启用','支持轮询、健康检查和 429 冷却。'],
     ['ENV 覆盖',String(configMeta?.overriddenFields?.length||0),'这些字段保存后可能不会立刻改变运行值。'],
     ['最近请求',document.getElementById('sT').textContent||'0','使用顶部统计同步展示。'],
     ['平均耗时',(document.getElementById('sA').textContent||'-')+' ms','已完成请求的平均耗时。'],
@@ -131,6 +150,16 @@ async function readApiPayload(resp){
   }
 }
 
+async function loadProxyPoolStatus(){
+  const resp=await fetch(adminAuthQ('/api/admin/proxy-pool/status'));
+  if(resp.status===401||resp.status===403){localStorage.removeItem('cursor2api_token');window.location.href=adminUrl(dashboardTab);return}
+  const payload=await readApiPayload(resp);
+  if(!resp.ok)throw new Error(payload.message||'代理池状态接口返回错误。');
+  proxyPoolRuntime=payload;
+  renderOverview();
+  renderProxyPoolStatus();
+}
+
 async function loadConfig(){
   const resp=await fetch(adminAuthQ('/api/admin/config'));
   if(resp.status===401||resp.status===403){localStorage.removeItem('cursor2api_token');window.location.href=adminUrl(dashboardTab);return}
@@ -138,18 +167,41 @@ async function loadConfig(){
   if(!resp.ok)throw new Error(payload.message||'后台配置接口返回错误。');
   configData=payload.config;configMeta=payload.meta;configErrors={};
   renderAlerts();renderOverview();renderConfig();updateSaveState();
+  await loadProxyPoolStatus();
 }
 
 function renderConfig(){
   if(!configData||!configMeta)return;
   document.getElementById('configNav').innerHTML='<div class="config-nav-title">配置分组</div>'+CONFIG_GROUPS.map(group=>'<button class="config-link" data-group-link="'+group.id+'" onclick="scrollConfigGroup(\''+group.id+'\')">'+escAdmin(group.title)+'</button>').join('');
+  const pool=proxyPoolSummary();
   document.getElementById('configSummary').innerHTML=[
     ['配置文件',configMeta.fileExists?'config.yaml':'首次保存会创建 config.yaml'],
     ['鉴权状态',configMeta.authConfigured?'已启用 auth_tokens':'未启用 auth_tokens'],
     ['日志模式',configData.logging.file_enabled?('文件('+configData.logging.persist_mode+') → '+configData.logging.dir):'仅内存'],
+    ['代理池状态',configData.proxy_pool.enabled?('已启用 · '+pool.available+'/'+pool.total+' 可用'):'未启用'],
     ['ENV 覆盖',String(configMeta.overriddenFields.length)+' 个字段'],
   ].map(([label,value])=>'<div class="summary-chip"><div class="label">'+escAdmin(label)+'</div><div class="value">'+escAdmin(value)+'</div></div>').join('');
+  renderProxyPoolStatus();
   document.getElementById('configGroups').innerHTML=CONFIG_GROUPS.map(group=>'<section class="config-group" id="group-'+group.id+'"><div class="config-group-header"><h3>'+escAdmin(group.title)+'</h3></div><div class="field-grid">'+group.fields.map(renderField).join('')+'</div></section>').join('');
+}
+
+function renderProxyPoolStatus(){
+  const el=document.getElementById('proxyPoolStatus');
+  if(!el)return;
+  const entries=proxyPoolRuntime?.entries||[];
+  if(!configData?.proxy_pool?.enabled&&entries.length===0){el.innerHTML='';return}
+  const pool=proxyPoolSummary();
+  el.innerHTML='<div class="proxy-status-head"><div class="panel-title">代理池运行时状态</div><div class="proxy-status-meta">'+escAdmin(configData?.proxy_pool?.enabled?'轮询已启用':'当前仅展示已配置节点')+' · '+pool.available+'/'+pool.total+' 可用 · '+pool.cooling+' 冷却中</div></div>'
+    +(entries.length?'<div class="proxy-status-list">'+entries.map(entry=>'<div class="proxy-status-item'+((!entry.healthy||entry.inCooldown)?' offline':'')+'"><div class="proxy-status-url">'+escAdmin(entry.url)+'</div><div class="proxy-status-flags">'
+      +'<span class="badge '+(entry.healthy?'live':'restart')+'">'+(entry.healthy?'HEALTHY':'UNHEALTHY')+'</span>'
+      +(entry.inCooldown?'<span class="badge env">冷却中</span>':'')
+      +(entry.consecutive429>0?'<span class="badge restart">429×'+escAdmin(entry.consecutive429)+'</span>':'')
+      +'</div><div class="proxy-status-grid">'
+      +'<div class="proxy-status-cell"><span class="label">最近使用</span><span class="value">'+escAdmin(entry.lastUsedAt?fmtDate(entry.lastUsedAt):'—')+'</span></div>'
+      +'<div class="proxy-status-cell"><span class="label">冷却截止</span><span class="value">'+escAdmin(entry.cooldownUntil?fmtDate(entry.cooldownUntil):'—')+'</span></div>'
+      +'<div class="proxy-status-cell"><span class="label">探测延迟</span><span class="value">'+escAdmin(entry.latencyMs!=null?entry.latencyMs+' ms':'—')+'</span></div>'
+      +'<div class="proxy-status-cell"><span class="label">连通状态</span><span class="value">'+escAdmin(entry.healthy?'可用':'不可用')+'</span></div>'
+      +'</div>'+(entry.lastError?'<div class="proxy-status-error">'+escAdmin(entry.lastError)+'</div>':'')+'</div>').join('')+'</div>':'<div class="warning-item">当前还没有配置代理池节点。</div>');
 }
 
 function renderField(field){
@@ -213,6 +265,7 @@ async function saveConfig(){
   const data=await readApiPayload(resp);
   if(!resp.ok){configData=payload;configErrors=data.errors||{};renderConfig();updateSaveState();showAdminToast(data.message||'保存失败，请检查配置。','error');return}
   configData=data.config;configMeta=data.meta;configErrors={};configDirty=false;saveState='saved';renderAlerts();renderOverview();renderConfig();updateSaveState();showAdminToast((data.changes&&data.changes.length?('已保存，'+data.changes.length+' 项变更。'):'配置已保存。')+(data.requiresRestart?' 端口变更需要重启服务。':''),'success');
+  await loadProxyPoolStatus();
 }
 
 function showAdminToast(message,kind){
@@ -225,4 +278,5 @@ document.getElementById('configGroups').addEventListener('change',e=>{const path
 window.addEventListener('popstate',()=>switchDashboardTab(new URLSearchParams(window.location.search).get('tab'),false));
 
 loadConfig().then(()=>switchDashboardTab(dashboardTab,false)).catch(err=>{console.error(err);showAdminToast(err?.message||'后台配置加载失败。','error')});
+setInterval(()=>{if(configData)loadProxyPoolStatus().catch(err=>console.error(err))},15000);
 

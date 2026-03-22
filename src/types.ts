@@ -100,10 +100,43 @@ export interface ParsedToolCall {
     arguments: Record<string, unknown>;
 }
 
+export interface ProxyPoolConfig {
+    enabled: boolean;
+    urls: string[];
+    cooldownSeconds: number;
+    healthCheck: {
+        enabled: boolean;
+        intervalSeconds: number;
+        url: string;
+    };
+}
+
+export type ProxySource = 'pool' | 'fallback' | 'vision' | 'direct';
+
+export interface ProxyTraceSnapshot {
+    selectedProxy?: string;
+    proxySource: ProxySource;
+    proxyAttemptCount: number;
+    proxyRotated: boolean;
+    proxyFailures: string[];
+}
+
+export interface ProxyPoolStatus {
+    url: string;
+    healthy: boolean;
+    cooldownUntil?: number;
+    inCooldown: boolean;
+    lastError?: string;
+    lastUsedAt?: number;
+    consecutive429: number;
+    latencyMs?: number;
+}
+
 export interface AppConfig {
     port: number;
     timeout: number;
     proxy?: string;
+    proxyPool: ProxyPoolConfig;
     cursorModel: string;
     authTokens?: string[];  // API 鉴权 token 列表，为空则不鉴权
     maxAutoContinue: number;        // 自动续写最大次数，默认 3，设 0 禁用

@@ -26,7 +26,10 @@ import type {
 import { getConfig } from './config.js';
 import { applyVisionInterceptor } from './vision.js';
 import { fixToolCallArguments } from './tool-fixer.js';
-import { getVisionProxyFetchOptions } from './proxy-agent.js';
+import {
+    fetchWithProxyFailover,
+    reportProxySelectionSuccess,
+} from './proxy-agent.js';
 
 // ==================== 工具指令构建 ====================
 
@@ -1527,14 +1530,16 @@ async function preprocessImages(messages: AnthropicMessage[]): Promise<void> {
                         urlImages++;
                         console.log(`[Converter] 📥 下载远程图片 (${urlImages}): ${imageUrl.substring(0, 100)}...`);
                         try {
-                            const response = await fetch(imageUrl, {
-                                ...getVisionProxyFetchOptions(),
+                            const { response, selection } = await fetchWithProxyFailover(imageUrl, {
                                 headers: {
                                     // 部分图片服务（如 Telegram）需要 User-Agent
                                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
                                 },
-                            } as any);
-                            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                            }, 'vision');
+                            if (!response.ok) {
+                                const text = await response.text();
+                                throw new Error(`HTTP ${response.status}${text ? ` - ${text}` : ''}`);
+                            }
                             const buffer = Buffer.from(await response.arrayBuffer());
                             const contentType = response.headers.get('content-type') || 'image/jpeg';
                             const mediaType = contentType.split(';')[0].trim();
@@ -1549,6 +1554,7 @@ async function preprocessImages(messages: AnthropicMessage[]): Promise<void> {
                                 continue;
                             }
                             const base64Data = buffer.toString('base64');
+                            reportProxySelectionSuccess(selection);
                             // 替换为 base64 格式
                             msg.content[i] = {
                                 ...block,

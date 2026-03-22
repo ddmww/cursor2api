@@ -4,6 +4,8 @@ import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { parseDocument } from 'yaml';
 import { CONFIG_FILE_PATH, CONFIG_TEMPLATE_PATH, getConfig, initConfigWatcher, reloadConfigFromDisk, stopConfigWatcher } from './config.js';
+import { getProxyPoolStatusSnapshot } from './proxy-agent.js';
+import { validateHttpProxyUrl } from './proxy-pool.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -15,6 +17,16 @@ interface EditableYamlConfig {
     port: number;
     timeout: number;
     proxy: string;
+    proxy_pool: {
+        enabled: boolean;
+        urls: StringList;
+        cooldown_seconds: number;
+        health_check: {
+            enabled: boolean;
+            interval_seconds: number;
+            url: string;
+        };
+    };
     cursor_model: string;
     auth_tokens: StringList;
     max_auto_continue: number;
@@ -64,6 +76,12 @@ const RESTART_REQUIRED_FIELDS = ['port'];
 const LIVE_RELOAD_FIELDS = [
     'timeout',
     'proxy',
+    'proxy_pool.enabled',
+    'proxy_pool.urls',
+    'proxy_pool.cooldown_seconds',
+    'proxy_pool.health_check.enabled',
+    'proxy_pool.health_check.interval_seconds',
+    'proxy_pool.health_check.url',
     'cursor_model',
     'auth_tokens',
     'max_auto_continue',
@@ -210,6 +228,16 @@ function getDefaultEditableConfig(): EditableYamlConfig {
         port: 3010,
         timeout: 120,
         proxy: '',
+        proxy_pool: {
+            enabled: false,
+            urls: [],
+            cooldown_seconds: 30,
+            health_check: {
+                enabled: false,
+                interval_seconds: 60,
+                url: 'http://cp.cloudflare.com/generate_204',
+            },
+        },
         cursor_model: 'anthropic/claude-sonnet-4.6',
         auth_tokens: [],
         max_auto_continue: 0,
@@ -274,6 +302,8 @@ function readEditableConfigFile(): { config: EditableYamlConfig; fileExists: boo
     const fingerprint = asObject(raw.fingerprint);
     const vision = asObject(raw.vision);
     const logging = asObject(raw.logging);
+    const proxyPool = asObject(raw.proxy_pool);
+    const proxyPoolHealthCheck = asObject(proxyPool.health_check);
 
     return {
         fileExists: existsSync(CONFIG_FILE_PATH),
@@ -281,6 +311,16 @@ function readEditableConfigFile(): { config: EditableYamlConfig; fileExists: boo
             port: asInt(raw.port, fallback.port),
             timeout: asInt(raw.timeout, fallback.timeout),
             proxy: asString(raw.proxy, fallback.proxy),
+            proxy_pool: {
+                enabled: asBoolean(proxyPool.enabled, fallback.proxy_pool.enabled),
+                urls: asStringList(proxyPool.urls),
+                cooldown_seconds: asInt(proxyPool.cooldown_seconds, fallback.proxy_pool.cooldown_seconds),
+                health_check: {
+                    enabled: asBoolean(proxyPoolHealthCheck.enabled, fallback.proxy_pool.health_check.enabled),
+                    interval_seconds: asInt(proxyPoolHealthCheck.interval_seconds, fallback.proxy_pool.health_check.interval_seconds),
+                    url: asString(proxyPoolHealthCheck.url, fallback.proxy_pool.health_check.url),
+                },
+            },
             cursor_model: asString(raw.cursor_model, fallback.cursor_model),
             auth_tokens: asStringList(raw.auth_tokens),
             max_auto_continue: asInt(raw.max_auto_continue, fallback.max_auto_continue),
@@ -416,6 +456,42 @@ function validateConfig(input: unknown): { config?: EditableYamlConfig; errors: 
     }
 
     normalized.proxy = asString(raw.proxy, '').trim();
+    if (normalized.proxy) {
+        const proxyError = validateHttpProxyUrl(normalized.proxy);
+        if (proxyError) errors.proxy = proxyError;
+    }
+
+    const proxyPool = asObject(raw.proxy_pool);
+    const proxyPoolHealthCheck = asObject(proxyPool.health_check);
+    normalized.proxy_pool.enabled = asBoolean(proxyPool.enabled, normalized.proxy_pool.enabled);
+    normalized.proxy_pool.urls = asStringList(proxyPool.urls);
+    normalized.proxy_pool.cooldown_seconds = asInt(proxyPool.cooldown_seconds, normalized.proxy_pool.cooldown_seconds);
+    normalized.proxy_pool.health_check.enabled = asBoolean(proxyPoolHealthCheck.enabled, normalized.proxy_pool.health_check.enabled);
+    normalized.proxy_pool.health_check.interval_seconds = asInt(proxyPoolHealthCheck.interval_seconds, normalized.proxy_pool.health_check.interval_seconds);
+    normalized.proxy_pool.health_check.url = asString(proxyPoolHealthCheck.url, normalized.proxy_pool.health_check.url).trim();
+
+    if (!Number.isInteger(normalized.proxy_pool.cooldown_seconds) || normalized.proxy_pool.cooldown_seconds <= 0) {
+        errors['proxy_pool.cooldown_seconds'] = 'proxy_pool.cooldown_seconds 必须是正整数。';
+    }
+    if (!Number.isInteger(normalized.proxy_pool.health_check.interval_seconds) || normalized.proxy_pool.health_check.interval_seconds <= 0) {
+        errors['proxy_pool.health_check.interval_seconds'] = 'proxy_pool.health_check.interval_seconds 必须是正整数。';
+    }
+    if (!normalized.proxy_pool.health_check.url) {
+        errors['proxy_pool.health_check.url'] = 'proxy_pool.health_check.url 不能为空。';
+    } else if (!/^https?:\/\//i.test(normalized.proxy_pool.health_check.url)) {
+        errors['proxy_pool.health_check.url'] = 'proxy_pool.health_check.url 必须是 http:// 或 https:// 地址。';
+    }
+    for (const [index, url] of normalized.proxy_pool.urls.entries()) {
+        const proxyError = validateHttpProxyUrl(url);
+        if (proxyError) {
+            errors['proxy_pool.urls'] = `第 ${index + 1} 个代理地址无效：${proxyError}`;
+            break;
+        }
+    }
+    if (normalized.proxy_pool.enabled && normalized.proxy_pool.urls.length === 0) {
+        errors['proxy_pool.urls'] = '启用代理池时，至少需要配置一个 http:// 或 https:// 代理地址。';
+    }
+
     normalized.cursor_model = asString(raw.cursor_model, '').trim();
     if (!normalized.cursor_model) {
         errors.cursor_model = 'cursor_model 不能为空。';
@@ -521,6 +597,12 @@ function writeEditableConfig(config: EditableYamlConfig): void {
     doc.setIn(['port'], config.port);
     doc.setIn(['timeout'], config.timeout);
     setOptionalString(doc, ['proxy'], config.proxy);
+    doc.setIn(['proxy_pool', 'enabled'], config.proxy_pool.enabled);
+    setOptionalStringList(doc, ['proxy_pool', 'urls'], config.proxy_pool.urls);
+    doc.setIn(['proxy_pool', 'cooldown_seconds'], config.proxy_pool.cooldown_seconds);
+    doc.setIn(['proxy_pool', 'health_check', 'enabled'], config.proxy_pool.health_check.enabled);
+    doc.setIn(['proxy_pool', 'health_check', 'interval_seconds'], config.proxy_pool.health_check.interval_seconds);
+    doc.setIn(['proxy_pool', 'health_check', 'url'], config.proxy_pool.health_check.url);
     doc.setIn(['cursor_model'], config.cursor_model);
     setOptionalStringList(doc, ['auth_tokens'], config.auth_tokens);
     doc.setIn(['max_auto_continue'], config.max_auto_continue);
@@ -579,6 +661,21 @@ export function apiGetAdminConfig(_req: Request, res: Response): void {
         res.status(500).json({
             success: false,
             message: '读取配置失败',
+            error: error instanceof Error ? error.message : String(error),
+        });
+    }
+}
+
+export function apiGetProxyPoolStatus(_req: Request, res: Response): void {
+    try {
+        res.json({
+            enabled: getConfig().proxyPool.enabled,
+            entries: getProxyPoolStatusSnapshot(),
+        });
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            message: '读取代理池状态失败',
             error: error instanceof Error ? error.message : String(error),
         });
     }

@@ -17,6 +17,7 @@ import { EventEmitter } from 'events';
 import { existsSync, mkdirSync, appendFileSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from 'fs';
 import { join, basename } from 'path';
 import { getConfig } from './config.js';
+import type { ProxyTraceSnapshot } from './types.js';
 
 // ==================== 类型定义 ====================
 
@@ -64,6 +65,8 @@ export interface RequestPayload {
     // ===== 转换后请求 =====
     /** 转换后的 Cursor 请求 */
     cursorRequest?: unknown;
+    /** 代理链路摘要 */
+    proxyTrace?: ProxyTraceSnapshot;
     /** Cursor 消息列表摘要 */
     cursorMessages?: Array<{ role: string; contentPreview: string; contentLength: number }>;
     
@@ -114,6 +117,10 @@ export interface RequestSummary {
     phaseTimings: PhaseTiming[];
     thinkingChars: number;
     systemPromptLength: number;
+    selectedProxy?: string;
+    proxyAttemptCount: number;
+    proxyRotated: boolean;
+    proxyFailures?: string[];
     /** 用户提问标题（截取最后一个 user 消息的前 80 字符） */
     title?: string;
 }
@@ -376,6 +383,12 @@ function compactPayloadForDisk(summary: RequestSummary, payload: RequestPayload)
     if (payload.cursorRequest !== undefined) {
         compact.cursorRequest = payload.cursorRequest;
     }
+    if (payload.proxyTrace) {
+        compact.proxyTrace = {
+            ...payload.proxyTrace,
+            proxyFailures: [...payload.proxyTrace.proxyFailures],
+        };
+    }
     if (payload.cursorMessages?.length) {
         compact.cursorMessages = payload.cursorMessages.map(msg => ({
             ...msg,
@@ -573,6 +586,8 @@ export function createRequestLogger(opts: {
         retryCount: 0, continuationCount: 0, toolCallsDetected: 0,
         phaseTimings: [], thinkingChars: 0,
         systemPromptLength: opts.systemPromptLength || 0,
+        proxyAttemptCount: 0,
+        proxyRotated: false,
     };
     const payload: RequestPayload = {};
     
@@ -799,6 +814,19 @@ export class RequestLogger {
                 return sum + text.length;
             }, 0),
         };
+    }
+
+    recordProxyTrace(trace: ProxyTraceSnapshot): void {
+        this.payload.proxyTrace = {
+            ...trace,
+            proxyFailures: [...trace.proxyFailures],
+        };
+        this.updateSummary({
+            selectedProxy: trace.selectedProxy,
+            proxyAttemptCount: trace.proxyAttemptCount,
+            proxyRotated: trace.proxyRotated,
+            proxyFailures: [...trace.proxyFailures],
+        });
     }
     
     /** 记录模型原始响应 */

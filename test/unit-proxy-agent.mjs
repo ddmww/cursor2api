@@ -1,24 +1,32 @@
 /**
  * test/unit-proxy-agent.mjs
  *
- * 单元测试：proxy-agent 代理模块
- * 运行方式：node test/unit-proxy-agent.mjs
- *
- * 测试逻辑均为纯内联实现，不依赖 dist 编译产物。
- * 验证：
- *  1. 无代理时 getProxyFetchOptions 返回空对象
- *  2. 有代理时返回含 dispatcher 的对象
- *  3. ProxyAgent 缓存（单例）
- *  4. 各种代理 URL 格式支持
+ * 代理池核心逻辑单元测试（纯内联，不依赖 dist）
+ * 覆盖：
+ *  1. HTTP 代理 URL 校验
+ *  2. 轮询顺序
+ *  3. 冷却 / unhealthy 跳过
+ *  4. 池失效后回退到 legacy proxy
+ *  5. Vision 独立代理优先级
+ *  6. 429 / 网络错误触发一次切换重试
  */
 
-// ─── 测试框架 ──────────────────────────────────────────────────────────
 let passed = 0;
 let failed = 0;
 
 function test(name, fn) {
     try {
-        fn();
+        const result = fn();
+        if (result && typeof result.then === 'function') {
+            return result.then(() => {
+                console.log(`  ✅  ${name}`);
+                passed++;
+            }).catch((e) => {
+                console.error(`  ❌  ${name}`);
+                console.error(`      ${e.message}`);
+                failed++;
+            });
+        }
         console.log(`  ✅  ${name}`);
         passed++;
     } catch (e) {
@@ -37,205 +45,270 @@ function assertEqual(a, b, msg) {
     if (as !== bs) throw new Error(msg || `Expected ${bs}, got ${as}`);
 }
 
-// ─── 内联 mock 实现（模拟 proxy-agent.ts 核心逻辑，不依赖 dist）──────
-
-// 模拟 config
 let mockConfig = {};
+let runtimeEntries = new Map();
+let runtimeUrls = [];
+let roundRobinIndex = 0;
+const failureMarks = [];
 
-function getConfig() {
-    return mockConfig;
+function resetState() {
+    mockConfig = {
+        proxy: '',
+        vision: { proxy: '' },
+        proxyPool: {
+            enabled: false,
+            urls: [],
+            cooldownSeconds: 30,
+            healthCheck: { enabled: false, intervalSeconds: 60, url: 'http://cp.cloudflare.com/generate_204' },
+        },
+    };
+    runtimeEntries = new Map();
+    runtimeUrls = [];
+    roundRobinIndex = 0;
+    failureMarks.length = 0;
 }
 
-// 模拟 ProxyAgent（轻量级）
-class MockProxyAgent {
-    constructor(url) {
-        this.url = url;
-        this.type = 'ProxyAgent';
+function validateHttpProxyUrl(url) {
+    let parsed;
+    try {
+        parsed = new URL(url);
+    } catch {
+        return 'invalid';
     }
+    if (!['http:', 'https:'].includes(parsed.protocol)) return 'unsupported';
+    if (!parsed.hostname) return 'missing-host';
+    return undefined;
 }
 
-// 内联与 src/proxy-agent.ts 同逻辑的实现
-let cachedAgent = undefined;
-
-function resetCache() {
-    cachedAgent = undefined;
+function syncPool() {
+    runtimeUrls = [...new Set((mockConfig.proxyPool.urls || []).map(s => s.trim()).filter(Boolean))];
+    const next = new Map();
+    for (const url of runtimeUrls) {
+        const prev = runtimeEntries.get(url);
+        const err = validateHttpProxyUrl(url);
+        next.set(url, {
+            url,
+            valid: !err,
+            healthy: err ? false : prev?.healthy ?? true,
+            cooldownUntil: prev?.cooldownUntil,
+            lastError: err || prev?.lastError,
+            lastUsedAt: prev?.lastUsedAt,
+            consecutive429: prev?.consecutive429 ?? 0,
+        });
+    }
+    runtimeEntries = next;
 }
 
-function getProxyDispatcher() {
-    const config = getConfig();
-    const proxyUrl = config.proxy;
+function isInCooldown(entry) {
+    return !!entry.cooldownUntil && entry.cooldownUntil > Date.now();
+}
 
-    if (!proxyUrl) return undefined;
+function isAvailable(entry) {
+    if (!entry.valid) return false;
+    if (isInCooldown(entry)) return false;
+    if (mockConfig.proxyPool.healthCheck.enabled && !entry.healthy) return false;
+    return true;
+}
 
-    if (!cachedAgent) {
-        cachedAgent = new MockProxyAgent(proxyUrl);
+function selectProxyPoolUrl(exclude = []) {
+    syncPool();
+    if (!mockConfig.proxyPool.enabled || runtimeUrls.length === 0) return undefined;
+    const excluded = new Set(exclude);
+    const total = runtimeUrls.length;
+    const start = roundRobinIndex % total;
+    for (let offset = 0; offset < total; offset++) {
+        const index = (start + offset) % total;
+        const entry = runtimeEntries.get(runtimeUrls[index]);
+        if (!entry || excluded.has(entry.url) || !isAvailable(entry)) continue;
+        roundRobinIndex = (index + 1) % total;
+        entry.lastUsedAt = Date.now();
+        return entry.url;
+    }
+    return undefined;
+}
+
+function selectCursorProxy(exclude = []) {
+    const poolUrl = selectProxyPoolUrl(exclude);
+    if (poolUrl) return { source: 'pool', url: poolUrl };
+    if (mockConfig.proxy && !exclude.includes(mockConfig.proxy)) return { source: 'fallback', url: mockConfig.proxy };
+    return { source: 'direct' };
+}
+
+function selectVisionProxy(exclude = []) {
+    if (mockConfig.vision?.proxy && !exclude.includes(mockConfig.vision.proxy)) {
+        return { source: 'vision', url: mockConfig.vision.proxy };
+    }
+    return selectCursorProxy(exclude);
+}
+
+function markPoolFailure(url, reason, opts = {}) {
+    const entry = runtimeEntries.get(url);
+    if (!entry) return;
+    entry.lastError = reason;
+    entry.cooldownUntil = Date.now() + mockConfig.proxyPool.cooldownSeconds * 1000;
+    if (opts.rateLimited) entry.consecutive429 += 1;
+    if (opts.transport) entry.healthy = false;
+    failureMarks.push({ url, reason, ...opts });
+}
+
+function isRetryableTransportError(error) {
+    return /ECONNRESET|ETIMEDOUT|UND_ERR_|fetch failed|timeout/i.test(error.message);
+}
+
+async function fetchWithProxyFailover(scope, fetchImpl) {
+    const trace = { selectedProxy: undefined, proxySource: 'direct', proxyAttemptCount: 0, proxyRotated: false, proxyFailures: [] };
+    const excluded = new Set();
+    let previousUrl;
+
+    for (let attempt = 1; attempt <= 2; attempt++) {
+        const selection = scope === 'vision' ? selectVisionProxy([...excluded]) : selectCursorProxy([...excluded]);
+        trace.proxyAttemptCount = attempt;
+        trace.selectedProxy = selection.url;
+        trace.proxySource = selection.source;
+        trace.proxyRotated = !!(previousUrl && previousUrl !== selection.url);
+
+        try {
+            const response = await fetchImpl(selection);
+            if (response.status === 429 && selection.source === 'pool' && selection.url) {
+                markPoolFailure(selection.url, 'HTTP 429', { rateLimited: true });
+                trace.proxyFailures.push('HTTP 429');
+                if (attempt < 2) {
+                    excluded.add(selection.url);
+                    previousUrl = selection.url;
+                    continue;
+                }
+            }
+            return { response, selection, trace };
+        } catch (error) {
+            if (!(selection.source === 'pool' && selection.url && isRetryableTransportError(error))) throw error;
+            markPoolFailure(selection.url, error.message, { transport: true });
+            trace.proxyFailures.push(error.message);
+            if (attempt >= 2) throw error;
+            excluded.add(selection.url);
+            previousUrl = selection.url;
+        }
     }
 
-    return cachedAgent;
+    throw new Error('unexpected');
 }
 
-function getProxyFetchOptions() {
-    const dispatcher = getProxyDispatcher();
-    return dispatcher ? { dispatcher } : {};
-}
+console.log('\n📦 [1] URL 校验\n');
 
-// ════════════════════════════════════════════════════════════════════
-// 1. 无代理配置 → 返回空对象
-// ════════════════════════════════════════════════════════════════════
-console.log('\n📦 [1] 无代理配置\n');
-
-test('proxy 未设置时返回空对象', () => {
-    resetCache();
-    mockConfig = {};
-    const opts = getProxyFetchOptions();
-    assertEqual(Object.keys(opts).length, 0, '应返回空对象');
+await test('支持 http 代理地址', () => {
+    assertEqual(validateHttpProxyUrl('http://mihomo:10001'), undefined);
 });
 
-test('proxy 为 undefined 时返回空对象', () => {
-    resetCache();
-    mockConfig = { proxy: undefined };
-    const opts = getProxyFetchOptions();
-    assertEqual(Object.keys(opts).length, 0);
+await test('支持 https 代理地址', () => {
+    assertEqual(validateHttpProxyUrl('https://proxy.example.com:443'), undefined);
 });
 
-test('proxy 为空字符串时返回空对象', () => {
-    resetCache();
-    mockConfig = { proxy: '' };
-    const opts = getProxyFetchOptions();
-    assertEqual(Object.keys(opts).length, 0, '空字符串不应创建代理');
+await test('拒绝 socks5 代理地址', () => {
+    assertEqual(validateHttpProxyUrl('socks5://mihomo:10001'), 'unsupported');
 });
 
-test('getProxyDispatcher 无代理时返回 undefined', () => {
-    resetCache();
-    mockConfig = {};
-    const d = getProxyDispatcher();
-    assertEqual(d, undefined);
+console.log('\n📦 [2] 轮询与回退\n');
+
+await test('代理池按 round robin 轮询', () => {
+    resetState();
+    mockConfig.proxyPool.enabled = true;
+    mockConfig.proxyPool.urls = ['http://mihomo:10001', 'http://mihomo:10002'];
+    assertEqual(selectCursorProxy().url, 'http://mihomo:10001');
+    assertEqual(selectCursorProxy().url, 'http://mihomo:10002');
+    assertEqual(selectCursorProxy().url, 'http://mihomo:10001');
 });
 
-// ════════════════════════════════════════════════════════════════════
-// 2. 有代理配置 → 返回含 dispatcher 的对象
-// ════════════════════════════════════════════════════════════════════
-console.log('\n📦 [2] 有代理配置\n');
-
-test('设置 proxy 后返回含 dispatcher 的对象', () => {
-    resetCache();
-    mockConfig = { proxy: 'http://127.0.0.1:7890' };
-    const opts = getProxyFetchOptions();
-    assert(opts.dispatcher !== undefined, '应包含 dispatcher');
-    assert(opts.dispatcher instanceof MockProxyAgent, '应为 ProxyAgent 实例');
+await test('冷却中的代理会被跳过', () => {
+    resetState();
+    mockConfig.proxyPool.enabled = true;
+    mockConfig.proxyPool.urls = ['http://mihomo:10001', 'http://mihomo:10002'];
+    syncPool();
+    runtimeEntries.get('http://mihomo:10001').cooldownUntil = Date.now() + 60_000;
+    assertEqual(selectCursorProxy().url, 'http://mihomo:10002');
 });
 
-test('dispatcher 包含正确的代理 URL', () => {
-    resetCache();
-    mockConfig = { proxy: 'http://127.0.0.1:7890' };
-    const d = getProxyDispatcher();
-    assertEqual(d.url, 'http://127.0.0.1:7890');
+await test('健康检查开启时会跳过 unhealthy 节点', () => {
+    resetState();
+    mockConfig.proxyPool.enabled = true;
+    mockConfig.proxyPool.healthCheck.enabled = true;
+    mockConfig.proxyPool.urls = ['http://mihomo:10001', 'http://mihomo:10002'];
+    syncPool();
+    runtimeEntries.get('http://mihomo:10001').healthy = false;
+    assertEqual(selectCursorProxy().url, 'http://mihomo:10002');
 });
 
-test('带认证的代理 URL', () => {
-    resetCache();
-    mockConfig = { proxy: 'http://user:pass@proxy.corp.com:8080' };
-    const d = getProxyDispatcher();
-    assertEqual(d.url, 'http://user:pass@proxy.corp.com:8080');
+await test('池不可用时回退到 legacy proxy', () => {
+    resetState();
+    mockConfig.proxy = 'http://fallback:7890';
+    mockConfig.proxyPool.enabled = true;
+    mockConfig.proxyPool.healthCheck.enabled = true;
+    mockConfig.proxyPool.urls = ['http://mihomo:10001'];
+    syncPool();
+    runtimeEntries.get('http://mihomo:10001').healthy = false;
+    const selection = selectCursorProxy();
+    assertEqual(selection.source, 'fallback');
+    assertEqual(selection.url, 'http://fallback:7890');
 });
 
-test('HTTPS 代理 URL', () => {
-    resetCache();
-    mockConfig = { proxy: 'https://secure-proxy.corp.com:443' };
-    const d = getProxyDispatcher();
-    assertEqual(d.url, 'https://secure-proxy.corp.com:443');
+await test('Vision 独立代理优先于共享池', () => {
+    resetState();
+    mockConfig.vision.proxy = 'http://vision-only:9000';
+    mockConfig.proxyPool.enabled = true;
+    mockConfig.proxyPool.urls = ['http://mihomo:10001', 'http://mihomo:10002'];
+    const selection = selectVisionProxy();
+    assertEqual(selection.source, 'vision');
+    assertEqual(selection.url, 'http://vision-only:9000');
 });
 
-test('带特殊字符密码的代理 URL', () => {
-    resetCache();
-    const url = 'http://admin:p%40ssw0rd@proxy:8080';
-    mockConfig = { proxy: url };
-    const d = getProxyDispatcher();
-    assertEqual(d.url, url, '应原样保留 URL 编码的特殊字符');
+console.log('\n📦 [3] 429 / 网络错误切换\n');
+
+await test('HTTP 429 会立即切换到下一个池节点重试一次', async () => {
+    resetState();
+    mockConfig.proxyPool.enabled = true;
+    mockConfig.proxyPool.urls = ['http://mihomo:10001', 'http://mihomo:10002'];
+    const calls = [];
+    const result = await fetchWithProxyFailover('cursor', async (selection) => {
+        calls.push(selection.url);
+        if (selection.url === 'http://mihomo:10001') return { status: 429 };
+        return { status: 200 };
+    });
+    assertEqual(calls, ['http://mihomo:10001', 'http://mihomo:10002']);
+    assertEqual(result.selection.url, 'http://mihomo:10002');
+    assert(result.trace.proxyRotated, '应标记发生了代理切换');
+    assertEqual(failureMarks[0].url, 'http://mihomo:10001');
+    assert(failureMarks[0].rateLimited, '第一个代理应记录为 rate limited');
 });
 
-// ════════════════════════════════════════════════════════════════════
-// 3. 缓存（单例）行为
-// ════════════════════════════════════════════════════════════════════
-console.log('\n📦 [3] 缓存单例行为\n');
-
-test('多次调用返回同一 ProxyAgent 实例', () => {
-    resetCache();
-    mockConfig = { proxy: 'http://127.0.0.1:7890' };
-    const d1 = getProxyDispatcher();
-    const d2 = getProxyDispatcher();
-    assert(d1 === d2, '应返回同一个缓存实例');
+await test('网络错误会切到下一个池节点', async () => {
+    resetState();
+    mockConfig.proxyPool.enabled = true;
+    mockConfig.proxyPool.urls = ['http://mihomo:10001', 'http://mihomo:10002'];
+    const calls = [];
+    const result = await fetchWithProxyFailover('cursor', async (selection) => {
+        calls.push(selection.url);
+        if (selection.url === 'http://mihomo:10001') {
+            throw new Error('ECONNRESET: socket hang up');
+        }
+        return { status: 200 };
+    });
+    assertEqual(calls, ['http://mihomo:10001', 'http://mihomo:10002']);
+    assertEqual(result.selection.url, 'http://mihomo:10002');
+    assert(failureMarks[0].transport, '第一个代理应记录为 transport failure');
 });
 
-test('getProxyFetchOptions 多次调用复用同一 dispatcher', () => {
-    resetCache();
-    mockConfig = { proxy: 'http://127.0.0.1:7890' };
-    const opts1 = getProxyFetchOptions();
-    const opts2 = getProxyFetchOptions();
-    assert(opts1.dispatcher === opts2.dispatcher, 'dispatcher 应为同一实例');
+await test('只会重试一次，第二个代理继续 429 时直接返回', async () => {
+    resetState();
+    mockConfig.proxyPool.enabled = true;
+    mockConfig.proxyPool.urls = ['http://mihomo:10001', 'http://mihomo:10002'];
+    const calls = [];
+    const result = await fetchWithProxyFailover('cursor', async (selection) => {
+        calls.push(selection.url);
+        return { status: 429 };
+    });
+    assertEqual(calls, ['http://mihomo:10001', 'http://mihomo:10002']);
+    assertEqual(result.response.status, 429);
+    assertEqual(result.trace.proxyAttemptCount, 2);
 });
 
-test('重置缓存后创建新实例', () => {
-    resetCache();
-    mockConfig = { proxy: 'http://127.0.0.1:7890' };
-    const d1 = getProxyDispatcher();
-    resetCache();
-    mockConfig = { proxy: 'http://10.0.0.1:3128' };
-    const d2 = getProxyDispatcher();
-    assert(d1 !== d2, '重置后应创建新实例');
-    assertEqual(d2.url, 'http://10.0.0.1:3128');
-});
-
-// ════════════════════════════════════════════════════════════════════
-// 4. fetch options 展开语义验证
-// ════════════════════════════════════════════════════════════════════
-console.log('\n📦 [4] fetch options 展开语义\n');
-
-test('无代理时展开不影响原始 options', () => {
-    resetCache();
-    mockConfig = {};
-    const original = { method: 'POST', headers: { 'Content-Type': 'application/json' } };
-    const merged = { ...original, ...getProxyFetchOptions() };
-    assertEqual(merged.method, 'POST');
-    assertEqual(merged.headers['Content-Type'], 'application/json');
-    assert(merged.dispatcher === undefined, '不应添加 dispatcher');
-});
-
-test('有代理时展开插入 dispatcher 且不覆盖其他字段', () => {
-    resetCache();
-    mockConfig = { proxy: 'http://127.0.0.1:7890' };
-    const original = { method: 'POST', body: '{}', signal: 'test-signal' };
-    const merged = { ...original, ...getProxyFetchOptions() };
-    assertEqual(merged.method, 'POST');
-    assertEqual(merged.body, '{}');
-    assertEqual(merged.signal, 'test-signal');
-    assert(merged.dispatcher instanceof MockProxyAgent, '应包含 dispatcher');
-});
-
-// ════════════════════════════════════════════════════════════════════
-// 5. config.ts 集成验证（环境变量优先级）
-// ════════════════════════════════════════════════════════════════════
-console.log('\n📦 [5] config 环境变量集成验证\n');
-
-test('PROXY 环境变量应覆盖 config.yaml（逻辑验证）', () => {
-    // 模拟 config.ts 的覆盖逻辑：env > yaml
-    let config = { proxy: 'http://yaml-proxy:1234' };
-    const envProxy = 'http://env-proxy:5678';
-    // 模拟 config.ts 第 49 行逻辑
-    if (envProxy) config.proxy = envProxy;
-    assertEqual(config.proxy, 'http://env-proxy:5678', 'PROXY 环境变量应覆盖 yaml 配置');
-});
-
-test('PROXY 环境变量未设置时保持 yaml 值（逻辑验证）', () => {
-    let config = { proxy: 'http://yaml-proxy:1234' };
-    const envProxy = undefined;
-    if (envProxy) config.proxy = envProxy;
-    assertEqual(config.proxy, 'http://yaml-proxy:1234', '应保持 yaml 配置不变');
-});
-
-// ════════════════════════════════════════════════════════════════════
-// 汇总
-// ════════════════════════════════════════════════════════════════════
 console.log('\n' + '═'.repeat(55));
 console.log(`  结果: ${passed} 通过 / ${failed} 失败 / ${passed + failed} 总计`);
 console.log('═'.repeat(55) + '\n');

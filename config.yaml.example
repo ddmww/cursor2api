@@ -24,6 +24,22 @@ timeout: 120
 # 💡 国内可直连 Cursor API，通常不需要配置全局代理
 # proxy: "http://127.0.0.1:7890"
 
+# 代理池（可选）
+# v1 仅支持轮询策略：遇到 429 / 网络错误时将当前节点冷却，并立即切下一个节点重试 1 次
+# ⚠️ 只支持 http / https 代理地址；Mihomo 请使用 mixed / http 入口，不支持 socks5://
+# 💡 启用后 Cursor 与 Vision 默认优先走池；如果池里没有可用节点，会回退到上面的单 proxy
+# proxy_pool:
+#   enabled: true
+#   urls:
+#     - "http://mihomo:10001"
+#     - "http://mihomo:10002"
+#     - "http://mihomo:10003"
+#   cooldown_seconds: 30
+#   health_check:
+#     enabled: true
+#     interval_seconds: 60
+#     url: "http://cp.cloudflare.com/generate_204"
+
 # Cursor 使用的模型
 cursor_model: "anthropic/claude-sonnet-4.6"
 

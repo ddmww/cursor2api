@@ -24,7 +24,15 @@ export function onConfigReload(cb: ConfigReloadCallback): void {
  * 从 config.yaml 解析配置（纯解析，不含环境变量覆盖）
  */
 function parseYamlConfig(defaults: AppConfig): { config: AppConfig; raw: Record<string, unknown> | null } {
-    const result = { ...defaults, fingerprint: { ...defaults.fingerprint } };
+    const result = {
+        ...defaults,
+        fingerprint: { ...defaults.fingerprint },
+        proxyPool: {
+            ...defaults.proxyPool,
+            urls: [...defaults.proxyPool.urls],
+            healthCheck: { ...defaults.proxyPool.healthCheck },
+        },
+    };
     let raw: Record<string, unknown> | null = null;
 
     if (!existsSync(CONFIG_FILE_PATH)) return { config: result, raw };
@@ -37,6 +45,21 @@ function parseYamlConfig(defaults: AppConfig): { config: AppConfig; raw: Record<
         if (yaml.port) result.port = yaml.port;
         if (yaml.timeout) result.timeout = yaml.timeout;
         if (yaml.proxy) result.proxy = yaml.proxy;
+        if (yaml.proxy_pool) {
+            const healthCheck = yaml.proxy_pool.health_check || {};
+            result.proxyPool = {
+                enabled: yaml.proxy_pool.enabled === true,
+                urls: Array.isArray(yaml.proxy_pool.urls)
+                    ? yaml.proxy_pool.urls.map(String).map((s: string) => s.trim()).filter(Boolean)
+                    : [],
+                cooldownSeconds: typeof yaml.proxy_pool.cooldown_seconds === 'number' ? yaml.proxy_pool.cooldown_seconds : 30,
+                healthCheck: {
+                    enabled: healthCheck.enabled === true,
+                    intervalSeconds: typeof healthCheck.interval_seconds === 'number' ? healthCheck.interval_seconds : 60,
+                    url: healthCheck.url || 'http://cp.cloudflare.com/generate_204',
+                },
+            };
+        }
         if (yaml.cursor_model) result.cursorModel = yaml.cursor_model;
         if (typeof yaml.max_auto_continue === 'number') result.maxAutoContinue = yaml.max_auto_continue;
         if (typeof yaml.max_history_messages === 'number') result.maxHistoryMessages = yaml.max_history_messages;
@@ -197,6 +220,16 @@ function defaultConfig(): AppConfig {
     return {
         port: 3010,
         timeout: 120,
+        proxyPool: {
+            enabled: false,
+            urls: [],
+            cooldownSeconds: 30,
+            healthCheck: {
+                enabled: false,
+                intervalSeconds: 60,
+                url: 'http://cp.cloudflare.com/generate_204',
+            },
+        },
         cursorModel: 'anthropic/claude-sonnet-4.6',
         maxAutoContinue: 0,
         maxHistoryMessages: -1,
@@ -217,6 +250,7 @@ function detectChanges(oldCfg: AppConfig, newCfg: AppConfig): string[] {
     if (oldCfg.port !== newCfg.port) changes.push(`port: ${oldCfg.port} → ${newCfg.port}`);
     if (oldCfg.timeout !== newCfg.timeout) changes.push(`timeout: ${oldCfg.timeout} → ${newCfg.timeout}`);
     if (oldCfg.proxy !== newCfg.proxy) changes.push(`proxy: ${oldCfg.proxy || '(none)'} → ${newCfg.proxy || '(none)'}`);
+    if (JSON.stringify(oldCfg.proxyPool) !== JSON.stringify(newCfg.proxyPool)) changes.push('proxy_pool: (changed)');
     if (oldCfg.cursorModel !== newCfg.cursorModel) changes.push(`cursor_model: ${oldCfg.cursorModel} → ${newCfg.cursorModel}`);
     if (oldCfg.maxAutoContinue !== newCfg.maxAutoContinue) changes.push(`max_auto_continue: ${oldCfg.maxAutoContinue} → ${newCfg.maxAutoContinue}`);
     if (oldCfg.maxHistoryMessages !== newCfg.maxHistoryMessages) changes.push(`max_history_messages: ${oldCfg.maxHistoryMessages} → ${newCfg.maxHistoryMessages}`);

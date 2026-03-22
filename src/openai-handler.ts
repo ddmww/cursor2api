@@ -614,6 +614,7 @@ async function handleOpenAIIncrementalTextStream(
     log: RequestLogger,
 ): Promise<void> {
     let activeCursorReq = cursorReq;
+    const proxyHook = { onProxyTrace: (trace: any) => log.recordProxyTrace(trace) };
     let retryCount = 0;
     const thinkingEnabled = anthropicReq.thinking?.type === 'enabled';
     let finalRawResponse = '';
@@ -680,7 +681,7 @@ async function handleOpenAIIncrementalTextStream(
             }
 
             flushVisible(event.delta);
-        });
+        }, undefined, proxyHook);
 
         return {
             rawResponse,
@@ -792,6 +793,7 @@ async function handleOpenAIStream(
     let fullResponse = '';
     let sentText = '';
     let activeCursorReq = cursorReq;
+    const proxyHook = { onProxyTrace: (trace: any) => log.recordProxyTrace(trace) };
     let retryCount = 0;
 
     // 统一缓冲模式：先缓冲全部响应，再检测拒绝和处理
@@ -801,7 +803,7 @@ async function handleOpenAIStream(
             if (event.type !== 'text-delta' || !event.delta) return;
             fullResponse += event.delta;
             onTextDelta?.(event.delta);
-        });
+        }, undefined, proxyHook);
     };
 
     try {
@@ -1139,7 +1141,8 @@ async function handleOpenAINonStream(
     log: RequestLogger,
 ): Promise<void> {
     let activeCursorReq = cursorReq;
-    let fullText = await sendCursorRequestFull(activeCursorReq);
+    const proxyHook = { onProxyTrace: (trace: any) => log.recordProxyTrace(trace) };
+    let fullText = await sendCursorRequestFull(activeCursorReq, undefined, proxyHook);
     const hasTools = (body.tools?.length ?? 0) > 0;
 
     // 日志记录在详细日志中
@@ -1167,7 +1170,7 @@ async function handleOpenAINonStream(
             const retryBody = buildRetryRequest(anthropicReq, attempt);
             const retryCursorReq = await convertToCursorRequest(retryBody);
             activeCursorReq = retryCursorReq;
-            fullText = await sendCursorRequestFull(activeCursorReq);
+            fullText = await sendCursorRequestFull(activeCursorReq, undefined, proxyHook);
             // 重试响应也需要先剥离 thinking
             if (hasLeadingThinking(fullText)) {
                 fullText = extractThinking(fullText).strippedText;
@@ -1549,6 +1552,7 @@ async function handleResponsesStream(
     // 缓冲完整响应再处理（复用 Chat Completions 的逻辑）
     let fullResponse = '';
     let activeCursorReq = cursorReq;
+    const proxyHook = { onProxyTrace: (trace: any) => log.recordProxyTrace(trace) };
     let retryCount = 0;
 
     // ★ 流式保活：防止网关 504
@@ -1567,7 +1571,7 @@ async function handleResponsesStream(
             await sendCursorRequest(activeCursorReq, (event: CursorSSEEvent) => {
                 if (event.type !== 'text-delta' || !event.delta) return;
                 fullResponse += event.delta;
-            });
+            }, undefined, proxyHook);
         };
 
         await executeStream();
@@ -1780,7 +1784,8 @@ async function handleResponsesNonStream(
     log: RequestLogger,
 ): Promise<void> {
     let activeCursorReq = cursorReq;
-    let fullText = await sendCursorRequestFull(activeCursorReq);
+    const proxyHook = { onProxyTrace: (trace: any) => log.recordProxyTrace(trace) };
+    let fullText = await sendCursorRequestFull(activeCursorReq, undefined, proxyHook);
     const hasTools = (anthropicReq.tools?.length ?? 0) > 0;
 
     // Thinking 提取
@@ -1795,7 +1800,7 @@ async function handleResponsesNonStream(
             const retryBody = buildRetryRequest(anthropicReq, attempt);
             const retryCursorReq = await convertToCursorRequest(retryBody);
             activeCursorReq = retryCursorReq;
-            fullText = await sendCursorRequestFull(activeCursorReq);
+            fullText = await sendCursorRequestFull(activeCursorReq, undefined, proxyHook);
             if (hasLeadingThinking(fullText)) {
                 fullText = extractThinking(fullText).strippedText;
             }

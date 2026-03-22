@@ -805,6 +805,7 @@ async function handleDirectTextStream(
 
     try {
     let activeCursorReq = cursorReq;
+    const proxyHook = { onProxyTrace: (trace: any) => log.recordProxyTrace(trace) };
     let retryCount = 0;
     let finalRawResponse = '';
     let finalVisibleText = '';
@@ -890,7 +891,7 @@ async function handleDirectTextStream(
             }
 
             flushVisible(event.delta);
-        });
+        }, undefined, proxyHook);
 
         // ★ 流结束后 flush 残留的 leadingBuffer
         // 极短响应可能在 leadingBuffer 中有未发送的内容
@@ -1054,6 +1055,7 @@ async function handleStream(res: Response, cursorReq: CursorChatRequest, body: A
 
     // 无工具模式：先缓冲全部响应再检测拒绝，如果是拒绝则重试
     let activeCursorReq = cursorReq;
+    const proxyHook = { onProxyTrace: (trace: any) => log.recordProxyTrace(trace) };
     let retryCount = 0;
 
     const executeStream = async (detectRefusalEarly = false, onTextDelta?: (delta: string) => void): Promise<{ earlyAborted: boolean }> => {
@@ -1082,7 +1084,7 @@ async function handleStream(res: Response, cursorReq: CursorChatRequest, body: A
                         abortController?.abort();
                     }
                 }
-            }, abortController?.signal);
+            }, abortController?.signal, proxyHook);
         } catch (err) {
             // 仅在非主动中止时抛出
             if (!earlyAborted) throw err;
@@ -1373,7 +1375,7 @@ Continue EXACTLY from where you stopped. DO NOT repeat any content already gener
                 if (event.type === 'text-delta' && event.delta) {
                     continuationResponse += event.delta;
                 }
-            });
+            }, undefined, proxyHook);
 
             if (continuationResponse.trim().length === 0) {
                 log.warn('Handler', 'continuation', '续写返回空响应，停止续写');
@@ -1689,8 +1691,9 @@ async function handleNonStream(res: Response, cursorReq: CursorChatRequest, body
 
     try {
     log.startPhase('send', '发送到 Cursor (非流式)');
+    const proxyHook = { onProxyTrace: (trace: any) => log.recordProxyTrace(trace) };
     const apiStart = Date.now();
-    let fullText = await sendCursorRequestFull(cursorReq);
+    let fullText = await sendCursorRequestFull(cursorReq, undefined, proxyHook);
     log.recordTTFT();
     log.recordCursorApiTime(apiStart);
     log.recordRawResponse(fullText);
@@ -1733,7 +1736,7 @@ async function handleNonStream(res: Response, cursorReq: CursorChatRequest, body
             log.updateSummary({ retryCount });
             const retryBody = buildRetryRequest(body, attempt);
             activeCursorReq = await convertToCursorRequest(retryBody);
-            fullText = await sendCursorRequestFull(activeCursorReq);
+            fullText = await sendCursorRequestFull(activeCursorReq, undefined, proxyHook);
             // 重试后也需要剥离 thinking 标签
             if (hasLeadingThinking(fullText)) {
                 const { thinkingContent: retryThinking, strippedText: retryStripped } = extractThinking(fullText);
@@ -1765,7 +1768,7 @@ async function handleNonStream(res: Response, cursorReq: CursorChatRequest, body
         retryCount++;
         log.warn('Handler', 'retry', `非流式响应过短 (${fullText.length} chars)，重试第${retryCount}次`);
         activeCursorReq = await convertToCursorRequest(body);
-        fullText = await sendCursorRequestFull(activeCursorReq);
+        fullText = await sendCursorRequestFull(activeCursorReq, undefined, proxyHook);
         log.info('Handler', 'retry', `非流式重试响应: ${fullText.length} chars`, { preview: fullText.substring(0, 200) });
     }
 
@@ -1810,7 +1813,7 @@ Continue EXACTLY from where you stopped. DO NOT repeat any content already gener
             ],
         };
 
-        const continuationResponse = await sendCursorRequestFull(continuationReq);
+        const continuationResponse = await sendCursorRequestFull(continuationReq, undefined, proxyHook);
 
         if (continuationResponse.trim().length === 0) {
             log.warn('Handler', 'continuation', '非流式续写返回空响应，停止续写');
@@ -1916,7 +1919,7 @@ Please go ahead and pick the most appropriate tool for the current task and outp
                 },
             ];
             activeCursorReq = { ...activeCursorReq, messages: forceMessages };
-            fullText = await sendCursorRequestFull(activeCursorReq);
+            fullText = await sendCursorRequestFull(activeCursorReq, undefined, proxyHook);
             ({ toolCalls, cleanText } = parseToolCalls(fullText));
         }
         if (toolChoice?.type === 'any' && toolCalls.length === 0) {

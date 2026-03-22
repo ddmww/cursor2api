@@ -352,6 +352,100 @@
   margin-bottom: 16px;
 }
 
+.proxy-pool-status-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.proxy-pool-status-panel:empty {
+  display: none;
+}
+
+.proxy-status-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.proxy-status-head .panel-title {
+  margin: 0;
+}
+
+.proxy-status-meta {
+  font-size: 11px;
+  color: var(--t3);
+}
+
+.proxy-status-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+}
+
+.proxy-status-item {
+  padding: 14px;
+  border-radius: 14px;
+  background: var(--bg2);
+  border: 1px solid var(--bdr);
+}
+
+.proxy-status-item.offline {
+  border-color: rgba(220, 38, 38, .2);
+}
+
+.proxy-status-url {
+  font-size: 12px;
+  color: var(--t1);
+  font-weight: 700;
+  font-family: var(--mono);
+  word-break: break-all;
+}
+
+.proxy-status-flags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0;
+}
+
+.proxy-status-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.proxy-status-cell {
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--bg1);
+  border: 1px solid var(--bdr);
+}
+
+.proxy-status-cell .label {
+  display: block;
+  font-size: 10px;
+  color: var(--t3);
+  margin-bottom: 4px;
+  text-transform: uppercase;
+  letter-spacing: .4px;
+}
+
+.proxy-status-cell .value {
+  font-size: 12px;
+  color: var(--t1);
+  font-weight: 600;
+}
+
+.proxy-status-error {
+  margin-top: 10px;
+  font-size: 11px;
+  color: var(--red);
+  line-height: 1.5;
+}
+
 .summary-chip {
   padding: 12px 14px;
   border-radius: 14px;

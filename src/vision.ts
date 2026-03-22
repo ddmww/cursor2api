@@ -1,6 +1,9 @@
 import { getConfig } from './config.js';
 import type { AnthropicMessage, AnthropicContentBlock } from './types.js';
-import { getVisionProxyFetchOptions } from './proxy-agent.js';
+import {
+    fetchWithProxyFailover,
+    reportProxySelectionSuccess,
+} from './proxy-agent.js';
 import { createWorker } from 'tesseract.js';
 
 export async function applyVisionInterceptor(messages: AnthropicMessage[]): Promise<void> {
@@ -143,20 +146,21 @@ async function callVisionAPI(imageBlocks: AnthropicContentBlock[]): Promise<stri
         max_tokens: 1500
     };
 
-    const res = await fetch(config.baseUrl, {
+    const { response: res, selection } = await fetchWithProxyFailover(config.baseUrl, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${config.apiKey}`
         },
         body: JSON.stringify(payload),
-        ...getVisionProxyFetchOptions(),
-    } as any);
+    }, 'vision');
 
     if (!res.ok) {
-        throw new Error(`Vision API returned status ${res.status}: ${await res.text()}`);
+        const text = await res.text();
+        throw new Error(`Vision API returned status ${res.status}: ${text}`);
     }
 
     const data = await res.json() as any;
+    reportProxySelectionSuccess(selection);
     return data.choices?.[0]?.message?.content || 'No description returned.';
 }

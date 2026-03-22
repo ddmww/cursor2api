@@ -128,6 +128,8 @@ function renderRL(){
     const dateStr=fmtDate(r.startTime);
     let bd='';if(r.stream)bd+='<span class="bg str">Stream</span>';if(r.hasTools)bd+='<span class="bg tls">T:'+r.toolCount+'</span>';
     if(r.retryCount>0)bd+='<span class="bg rtr">R:'+r.retryCount+'</span>';if(r.continuationCount>0)bd+='<span class="bg cnt">C:'+r.continuationCount+'</span>';
+    if(r.proxyAttemptCount>0)bd+='<span class="bg tls">P:'+r.proxyAttemptCount+'</span>';
+    if(r.proxyRotated)bd+='<span class="bg rtr">ROT</span>';
     if(r.status==='error')bd+='<span class="bg err">ERR</span>';if(r.status==='intercepted')bd+='<span class="bg icp">INTERCEPT</span>';
     const fm=r.apiFormat||'anthropic';
     return '<div class="ri'+(ac?' a':'')+'" data-r="'+r.requestId+'">'
@@ -172,8 +174,9 @@ function renderSCard(s){
   const c=document.getElementById('scard');c.style.display='block';
   const dur=s.endTime?((s.endTime-s.startTime)/1000).toFixed(2)+'s':'进行中...';
   const sc={processing:'var(--yellow)',success:'var(--green)',error:'var(--red)',intercepted:'var(--pink)'}[s.status]||'var(--t3)';
-  const items=[['状态','<span style="color:'+sc+'">'+s.status.toUpperCase()+'</span>'],['耗时',dur],['模型',escH(s.model)],['格式',(s.apiFormat||'anthropic').toUpperCase()],['消息数',s.messageCount],['响应字数',fmtN(s.responseChars)],['TTFT',s.ttft?s.ttft+'ms':'-'],['API耗时',s.cursorApiTime?s.cursorApiTime+'ms':'-'],['停止原因',s.stopReason||'-'],['重试',s.retryCount],['续写',s.continuationCount],['工具调用',s.toolCallsDetected]];
+  const items=[['状态','<span style="color:'+sc+'">'+s.status.toUpperCase()+'</span>'],['耗时',dur],['模型',escH(s.model)],['格式',(s.apiFormat||'anthropic').toUpperCase()],['消息数',s.messageCount],['响应字数',fmtN(s.responseChars)],['TTFT',s.ttft?s.ttft+'ms':'-'],['API耗时',s.cursorApiTime?s.cursorApiTime+'ms':'-'],['停止原因',s.stopReason||'-'],['重试',s.retryCount],['续写',s.continuationCount],['工具调用',s.toolCallsDetected],['代理',escH(s.selectedProxy||'直连')],['代理尝试',s.proxyAttemptCount||0],['代理切换',s.proxyRotated?'是':'否']];
   if(s.thinkingChars>0)items.push(['Thinking',fmtN(s.thinkingChars)+' chars']);
+  if(s.proxyFailures&&s.proxyFailures.length)items.push(['代理失败',escH(s.proxyFailures.join(' | '))]);
   if(s.error)items.push(['错误','<span style="color:var(--red)">'+escH(s.error)+'</span>']);
   document.getElementById('sgrid').innerHTML=items.map(([l,v])=>'<div class="si2"><span class="l">'+l+'</span><span class="v">'+v+'</span></div>').join('');
   renderPTL(s);
@@ -210,7 +213,7 @@ function renderRequestTab(tc){
   const s=selId?rmap[selId]:null;
   if(s){
     h+='<div class="content-section"><div class="cs-title">📋 请求概要</div>';
-    h+='<div class="resp-box">'+syntaxHL({method:s.method,path:s.path,model:s.model,stream:s.stream,apiFormat:s.apiFormat,messageCount:s.messageCount,toolCount:s.toolCount,hasTools:s.hasTools})+'</div></div>';
+    h+='<div class="resp-box">'+syntaxHL({method:s.method,path:s.path,model:s.model,stream:s.stream,apiFormat:s.apiFormat,messageCount:s.messageCount,toolCount:s.toolCount,hasTools:s.hasTools,selectedProxy:s.selectedProxy||null,proxyAttemptCount:s.proxyAttemptCount||0,proxyRotated:!!s.proxyRotated,proxyFailures:s.proxyFailures||[]})+'</div></div>';
   }
   if(curPayload.tools&&curPayload.tools.length){
     h+='<div class="content-section"><div class="cs-title">🔧 工具定义 <span class="cnt">'+curPayload.tools.length+' 个</span></div>';

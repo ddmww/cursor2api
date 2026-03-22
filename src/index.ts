@@ -12,7 +12,7 @@ import { getConfig, initConfigWatcher, stopConfigWatcher } from './config.js';
 import { handleMessages, listModels, countTokens } from './handler.js';
 import { handleOpenAIChatCompletions, handleOpenAIResponses } from './openai-handler.js';
 import { apiGetLogs, apiGetRequests, apiGetStats, apiGetPayload, apiLogsStream, apiClearLogs } from './log-viewer.js';
-import { dashboardAuth, serveAdminUi, redirectLogsToAdmin, apiGetAdminConfig, apiPutAdminConfig } from './admin-ui.js';
+import { dashboardAuth, serveAdminUi, redirectLogsToAdmin, apiGetAdminConfig, apiPutAdminConfig, apiGetProxyPoolStatus } from './admin-ui.js';
 import { loadLogsFromFiles } from './logger.js';
 
 // 从 package.json 读取版本号，统一来源，避免多处硬编码
@@ -51,6 +51,7 @@ app.get('/api/payload/:requestId', dashboardAuth, apiGetPayload);
 app.get('/api/logs/stream', dashboardAuth, apiLogsStream);
 app.post('/api/logs/clear', dashboardAuth, apiClearLogs);
 app.get('/api/admin/config', dashboardAuth, apiGetAdminConfig);
+app.get('/api/admin/proxy-pool/status', dashboardAuth, apiGetProxyPoolStatus);
 app.put('/api/admin/config', dashboardAuth, apiPutAdminConfig);
 
 // ★ API 鉴权中间件：配置了 authTokens 则需要 Bearer token
