@@ -27,6 +27,11 @@ interface EditableYamlConfig {
             url: string;
         };
     };
+    upstream_blocker: {
+        enabled: boolean;
+        keywords: StringList;
+        message: string;
+    };
     cursor_model: string;
     auth_tokens: StringList;
     max_auto_continue: number;
@@ -82,6 +87,9 @@ const LIVE_RELOAD_FIELDS = [
     'proxy_pool.health_check.enabled',
     'proxy_pool.health_check.interval_seconds',
     'proxy_pool.health_check.url',
+    'upstream_blocker.enabled',
+    'upstream_blocker.keywords',
+    'upstream_blocker.message',
     'cursor_model',
     'auth_tokens',
     'max_auto_continue',
@@ -117,6 +125,9 @@ const ENV_OVERRIDE_MAP: Record<string, string> = {
     port: 'PORT',
     timeout: 'TIMEOUT',
     proxy: 'PROXY',
+    'upstream_blocker.enabled': 'UPSTREAM_BLOCKER_ENABLED',
+    'upstream_blocker.keywords': 'UPSTREAM_BLOCKER_KEYWORDS',
+    'upstream_blocker.message': 'UPSTREAM_BLOCKER_MESSAGE',
     cursor_model: 'CURSOR_MODEL',
     auth_tokens: 'AUTH_TOKEN',
     max_auto_continue: 'MAX_AUTO_CONTINUE',
@@ -238,6 +249,11 @@ function getDefaultEditableConfig(): EditableYamlConfig {
                 url: 'http://cp.cloudflare.com/generate_204',
             },
         },
+        upstream_blocker: {
+            enabled: false,
+            keywords: [],
+            message: '上游渠道商拦截了当前请求，请尝试换个说法后重试，或稍后再试。',
+        },
         cursor_model: 'anthropic/claude-sonnet-4.6',
         auth_tokens: [],
         max_auto_continue: 0,
@@ -304,6 +320,7 @@ function readEditableConfigFile(): { config: EditableYamlConfig; fileExists: boo
     const logging = asObject(raw.logging);
     const proxyPool = asObject(raw.proxy_pool);
     const proxyPoolHealthCheck = asObject(proxyPool.health_check);
+    const upstreamBlocker = asObject(raw.upstream_blocker);
 
     return {
         fileExists: existsSync(CONFIG_FILE_PATH),
@@ -320,6 +337,11 @@ function readEditableConfigFile(): { config: EditableYamlConfig; fileExists: boo
                     interval_seconds: asInt(proxyPoolHealthCheck.interval_seconds, fallback.proxy_pool.health_check.interval_seconds),
                     url: asString(proxyPoolHealthCheck.url, fallback.proxy_pool.health_check.url),
                 },
+            },
+            upstream_blocker: {
+                enabled: asBoolean(upstreamBlocker.enabled, fallback.upstream_blocker.enabled),
+                keywords: asStringList(upstreamBlocker.keywords),
+                message: asString(upstreamBlocker.message, fallback.upstream_blocker.message),
             },
             cursor_model: asString(raw.cursor_model, fallback.cursor_model),
             auth_tokens: asStringList(raw.auth_tokens),
@@ -492,6 +514,17 @@ function validateConfig(input: unknown): { config?: EditableYamlConfig; errors: 
         errors['proxy_pool.urls'] = '启用代理池时，至少需要配置一个 http:// 或 https:// 代理地址。';
     }
 
+    const upstreamBlocker = asObject(raw.upstream_blocker);
+    normalized.upstream_blocker.enabled = asBoolean(upstreamBlocker.enabled, normalized.upstream_blocker.enabled);
+    normalized.upstream_blocker.keywords = asStringList(upstreamBlocker.keywords);
+    normalized.upstream_blocker.message = asString(upstreamBlocker.message, normalized.upstream_blocker.message).trim();
+    if (normalized.upstream_blocker.enabled && normalized.upstream_blocker.keywords.length === 0) {
+        errors['upstream_blocker.keywords'] = '启用上游拦截时，至少需要配置一个关键词。';
+    }
+    if (!normalized.upstream_blocker.message) {
+        errors['upstream_blocker.message'] = 'upstream_blocker.message 不能为空。';
+    }
+
     normalized.cursor_model = asString(raw.cursor_model, '').trim();
     if (!normalized.cursor_model) {
         errors.cursor_model = 'cursor_model 不能为空。';
@@ -603,6 +636,9 @@ function writeEditableConfig(config: EditableYamlConfig): void {
     doc.setIn(['proxy_pool', 'health_check', 'enabled'], config.proxy_pool.health_check.enabled);
     doc.setIn(['proxy_pool', 'health_check', 'interval_seconds'], config.proxy_pool.health_check.interval_seconds);
     doc.setIn(['proxy_pool', 'health_check', 'url'], config.proxy_pool.health_check.url);
+    doc.setIn(['upstream_blocker', 'enabled'], config.upstream_blocker.enabled);
+    setOptionalStringList(doc, ['upstream_blocker', 'keywords'], config.upstream_blocker.keywords);
+    doc.setIn(['upstream_blocker', 'message'], config.upstream_blocker.message);
     doc.setIn(['cursor_model'], config.cursor_model);
     setOptionalStringList(doc, ['auth_tokens'], config.auth_tokens);
     doc.setIn(['max_auto_continue'], config.max_auto_continue);

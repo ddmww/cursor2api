@@ -21,6 +21,7 @@ import { sendCursorRequest, sendCursorRequestFull } from './cursor-client.js';
 import { getConfig } from './config.js';
 import { createRequestLogger, type RequestLogger } from './logger.js';
 import { createIncrementalTextStreamer, hasLeadingThinking, splitLeadingThinkingBlocks, stripThinkingTags } from './streaming-text.js';
+import { assertUpstreamResponseAllowed, UpstreamBlockedError } from './upstream-blocker.js';
 
 function msgId(): string {
     return 'msg_' + uuidv4().replace(/-/g, '').substring(0, 24);
@@ -389,8 +390,13 @@ export async function handleMessages(req: Request, res: Response): Promise<void>
         }
     } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
-        log.fail(message);
-        res.status(500).json({
+        const status = err instanceof UpstreamBlockedError ? err.status : 500;
+        if (err instanceof UpstreamBlockedError) {
+            log.intercepted(`上游关键词拦截: ${err.matchedKeyword}`);
+        } else {
+            log.fail(message);
+        }
+        res.status(status).json({
             type: 'error',
             error: { type: 'api_error', message },
         });
@@ -757,6 +763,29 @@ function writeAnthropicTextDelta(
         type: 'content_block_delta',
         index: state.blockIndex,
         delta: { type: 'text_delta', text },
+    });
+}
+
+function startAnthropicMessageStream(res: Response, id: string, body: AnthropicRequest): void {
+    res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no',
+    });
+
+    writeSSE(res, 'message_start', {
+        type: 'message_start',
+        message: {
+            id,
+            type: 'message',
+            role: 'assistant',
+            content: [],
+            model: body.model,
+            stop_reason: null,
+            stop_sequence: null,
+            usage: { input_tokens: estimateInputTokens(body), output_tokens: 0 },
+        },
     });
 }
 
@@ -1680,8 +1709,11 @@ Please go ahead and pick the most appropriate tool for the current task and outp
 async function handleNonStream(res: Response, cursorReq: CursorChatRequest, body: AnthropicRequest, log: RequestLogger, clientRequestedThinking: boolean = false): Promise<void> {
     // ★ 非流式保活：手动设置 chunked 响应，在缓冲期间每 15s 发送空白字符保活
     // JSON.parse 会忽略前导空白，所以客户端解析不受影响
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    const keepaliveInterval = setInterval(() => {
+    const delaySuccessHeader = getConfig().upstreamBlocker.enabled;
+    if (!delaySuccessHeader) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+    }
+    const keepaliveInterval = delaySuccessHeader ? null : setInterval(() => {
         try {
             res.write(' ');
             // @ts-expect-error flush exists on ServerResponse when compression is used
@@ -1701,6 +1733,8 @@ async function handleNonStream(res: Response, cursorReq: CursorChatRequest, body
     const hasTools = (body.tools?.length ?? 0) > 0;
     let activeCursorReq = cursorReq;
     let retryCount = 0;
+    let upstreamTextForBlockCheck = fullText;
+    let usedSyntheticFallback = false;
 
     log.info('Handler', 'response', `非流式原始响应: ${fullText.length} chars`, {
         preview: fullText.substring(0, 300),
@@ -1748,6 +1782,8 @@ async function handleNonStream(res: Response, cursorReq: CursorChatRequest, body
             if (!shouldRetry()) break;
         }
         if (shouldRetry()) {
+            usedSyntheticFallback = true;
+            upstreamTextForBlockCheck = fullText;
             if (hasTools) {
                 log.warn('Handler', 'refusal', '非流式工具模式下拒绝 → 引导模型输出');
                 fullText = 'I understand the request. Let me analyze the information and proceed with the appropriate action.';
@@ -1851,6 +1887,12 @@ Continue EXACTLY from where you stopped. DO NOT repeat any content already gener
             consecutiveSmallAdds = 0;
         }
     }
+
+    if (!usedSyntheticFallback) {
+        upstreamTextForBlockCheck = fullText;
+    }
+    log.recordRawResponse(fullText);
+    assertUpstreamResponseAllowed(upstreamTextForBlockCheck);
 
     const contentBlocks: AnthropicContentBlock[] = [];
 
@@ -1978,7 +2020,11 @@ Please go ahead and pick the most appropriate tool for the current task and outp
         },
     };
 
-    clearInterval(keepaliveInterval);
+    if (delaySuccessHeader) {
+        res.status(200);
+        res.setHeader('Content-Type', 'application/json');
+    }
+    if (keepaliveInterval) clearInterval(keepaliveInterval);
     res.end(JSON.stringify(response));
 
     // ★ 记录完成
@@ -1986,7 +2032,10 @@ Please go ahead and pick the most appropriate tool for the current task and outp
     log.complete(fullText.length, stopReason);
 
     } catch (err: unknown) {
-        clearInterval(keepaliveInterval);
+        if (keepaliveInterval) clearInterval(keepaliveInterval);
+        if (err instanceof UpstreamBlockedError) {
+            throw err;
+        }
         const message = err instanceof Error ? err.message : String(err);
         log.fail(message);
         try {

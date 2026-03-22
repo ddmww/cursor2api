@@ -132,11 +132,18 @@ export interface ProxyPoolStatus {
     latencyMs?: number;
 }
 
+export interface UpstreamBlockerConfig {
+    enabled: boolean;
+    keywords: string[];
+    message: string;
+}
+
 export interface AppConfig {
     port: number;
     timeout: number;
     proxy?: string;
     proxyPool: ProxyPoolConfig;
+    upstreamBlocker: UpstreamBlockerConfig;
     cursorModel: string;
     authTokens?: string[];  // API 鉴权 token 列表，为空则不鉴权
     maxAutoContinue: number;        // 自动续写最大次数，默认 3，设 0 禁用

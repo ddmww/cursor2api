@@ -32,6 +32,10 @@ function parseYamlConfig(defaults: AppConfig): { config: AppConfig; raw: Record<
             urls: [...defaults.proxyPool.urls],
             healthCheck: { ...defaults.proxyPool.healthCheck },
         },
+        upstreamBlocker: {
+            ...defaults.upstreamBlocker,
+            keywords: [...defaults.upstreamBlocker.keywords],
+        },
     };
     let raw: Record<string, unknown> | null = null;
 
@@ -58,6 +62,17 @@ function parseYamlConfig(defaults: AppConfig): { config: AppConfig; raw: Record<
                     intervalSeconds: typeof healthCheck.interval_seconds === 'number' ? healthCheck.interval_seconds : 60,
                     url: healthCheck.url || 'http://cp.cloudflare.com/generate_204',
                 },
+            };
+        }
+        if (yaml.upstream_blocker) {
+            result.upstreamBlocker = {
+                enabled: yaml.upstream_blocker.enabled === true,
+                keywords: Array.isArray(yaml.upstream_blocker.keywords)
+                    ? yaml.upstream_blocker.keywords.map(String).map((s: string) => s.trim()).filter(Boolean)
+                    : [],
+                message: typeof yaml.upstream_blocker.message === 'string' && yaml.upstream_blocker.message.trim()
+                    ? yaml.upstream_blocker.message.trim()
+                    : defaults.upstreamBlocker.message,
             };
         }
         if (yaml.cursor_model) result.cursorModel = yaml.cursor_model;
@@ -147,6 +162,19 @@ function applyEnvOverrides(cfg: AppConfig): void {
     if (process.env.PORT) cfg.port = parseInt(process.env.PORT);
     if (process.env.TIMEOUT) cfg.timeout = parseInt(process.env.TIMEOUT);
     if (process.env.PROXY) cfg.proxy = process.env.PROXY;
+    if (process.env.UPSTREAM_BLOCKER_ENABLED !== undefined) {
+        cfg.upstreamBlocker.enabled = process.env.UPSTREAM_BLOCKER_ENABLED === 'true' || process.env.UPSTREAM_BLOCKER_ENABLED === '1';
+    }
+    if (process.env.UPSTREAM_BLOCKER_KEYWORDS !== undefined) {
+        cfg.upstreamBlocker.keywords = process.env.UPSTREAM_BLOCKER_KEYWORDS
+            .split('\n')
+            .flatMap(line => line.split(','))
+            .map(s => s.trim())
+            .filter(Boolean);
+    }
+    if (process.env.UPSTREAM_BLOCKER_MESSAGE !== undefined) {
+        cfg.upstreamBlocker.message = process.env.UPSTREAM_BLOCKER_MESSAGE.trim() || cfg.upstreamBlocker.message;
+    }
     if (process.env.CURSOR_MODEL) cfg.cursorModel = process.env.CURSOR_MODEL;
     if (process.env.MAX_AUTO_CONTINUE !== undefined) cfg.maxAutoContinue = parseInt(process.env.MAX_AUTO_CONTINUE);
     if (process.env.MAX_HISTORY_MESSAGES !== undefined) cfg.maxHistoryMessages = parseInt(process.env.MAX_HISTORY_MESSAGES);
@@ -230,6 +258,11 @@ function defaultConfig(): AppConfig {
                 url: 'http://cp.cloudflare.com/generate_204',
             },
         },
+        upstreamBlocker: {
+            enabled: false,
+            keywords: [],
+            message: '上游渠道商拦截了当前请求，请尝试换个说法后重试，或稍后再试。',
+        },
         cursorModel: 'anthropic/claude-sonnet-4.6',
         maxAutoContinue: 0,
         maxHistoryMessages: -1,
@@ -251,6 +284,7 @@ function detectChanges(oldCfg: AppConfig, newCfg: AppConfig): string[] {
     if (oldCfg.timeout !== newCfg.timeout) changes.push(`timeout: ${oldCfg.timeout} → ${newCfg.timeout}`);
     if (oldCfg.proxy !== newCfg.proxy) changes.push(`proxy: ${oldCfg.proxy || '(none)'} → ${newCfg.proxy || '(none)'}`);
     if (JSON.stringify(oldCfg.proxyPool) !== JSON.stringify(newCfg.proxyPool)) changes.push('proxy_pool: (changed)');
+    if (JSON.stringify(oldCfg.upstreamBlocker) !== JSON.stringify(newCfg.upstreamBlocker)) changes.push('upstream_blocker: (changed)');
     if (oldCfg.cursorModel !== newCfg.cursorModel) changes.push(`cursor_model: ${oldCfg.cursorModel} → ${newCfg.cursorModel}`);
     if (oldCfg.maxAutoContinue !== newCfg.maxAutoContinue) changes.push(`max_auto_continue: ${oldCfg.maxAutoContinue} → ${newCfg.maxAutoContinue}`);
     if (oldCfg.maxHistoryMessages !== newCfg.maxHistoryMessages) changes.push(`max_history_messages: ${oldCfg.maxHistoryMessages} → ${newCfg.maxHistoryMessages}`);

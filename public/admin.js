@@ -20,7 +20,10 @@ const CONFIG_GROUPS=[
     {path:'auth_tokens',label:'Auth Tokens',type:'list-secret',help:'每行一个 token。为空则 API 与后台开放。',mono:true,rows:4},
     {path:'sanitize_response',label:'响应内容清洗',type:'checkbox',help:'将响应中的 Cursor 身份引用替换为 Claude。'},
     {path:'fixed_fallback_responses',label:'固定身份/能力回复',type:'checkbox',help:'关闭后，不再注入 Claude 身份与能力说明模板。'},
-    {path:'refusal_patterns',label:'自定义拒绝检测规则',type:'list',help:'每行一条规则。',mono:true,rows:5,full:true}
+    {path:'refusal_patterns',label:'自定义拒绝检测规则',type:'list',help:'每行一条规则。',mono:true,rows:5,full:true},
+    {path:'upstream_blocker.enabled',label:'上游拦截转错误',type:'checkbox',help:'命中关键词时，不再向下游返回 200 成功响应，而是改为上游拦截错误。'},
+    {path:'upstream_blocker.keywords',label:'上游拦截关键词',type:'list',help:'每行一个关键词，大小写不敏感，按包含关系匹配。建议填写 Cursor 身份泄漏或固定拒绝文案。',mono:true,rows:5,full:true},
+    {path:'upstream_blocker.message',label:'上游拦截报错文案',type:'textarea',help:'返回给下游的错误提示。建议提示用户换个说法或稍后重试。',mono:true,rows:3,full:true}
   ]},
   {id:'behavior',title:'上下文与行为',fields:[
     {path:'max_auto_continue',label:'自动续写次数',type:'number',help:'0 表示禁用。',min:0},

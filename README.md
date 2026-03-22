@@ -88,6 +88,7 @@ cp config.yaml.example config.yaml
 | `max_auto_continue` | 截断自动续写次数 (`0`=禁用，交由客户端续写) | `0` |
 | `sanitize_response` | 响应内容清洗开关（替换 Cursor 身份引用为 Claude） | `false` |
 | `refusal_patterns` | 自定义拒绝检测规则列表（追加到内置规则） | 不配置 |
+| `upstream_blocker.*` | 命中上游关键词时改为返回 `502` 错误 | 关闭 |
 
 > 💡 详细配置说明请参见 `config.yaml.example` 中的注释。
 

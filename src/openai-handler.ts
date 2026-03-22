@@ -29,6 +29,7 @@ import { sendCursorRequest, sendCursorRequestFull } from './cursor-client.js';
 import { getConfig } from './config.js';
 import { createRequestLogger, type RequestLogger } from './logger.js';
 import { createIncrementalTextStreamer, hasLeadingThinking, splitLeadingThinkingBlocks, stripThinkingTags } from './streaming-text.js';
+import { assertUpstreamResponseAllowed, UpstreamBlockedError } from './upstream-blocker.js';
 import {
     autoContinueCursorToolResponseFull,
     autoContinueCursorToolResponseStream,
@@ -498,10 +499,14 @@ export async function handleOpenAIChatCompletions(req: Request, res: Response): 
         }
     } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
-        log.fail(message);
-        const status = err instanceof OpenAIRequestError ? err.status : 500;
-        const type = err instanceof OpenAIRequestError ? err.type : 'server_error';
-        const code = err instanceof OpenAIRequestError ? err.code : 'internal_error';
+        if (err instanceof UpstreamBlockedError) {
+            log.intercepted(`上游关键词拦截 (OpenAI): ${err.matchedKeyword}`);
+        } else {
+            log.fail(message);
+        }
+        const status = err instanceof OpenAIRequestError ? err.status : err instanceof UpstreamBlockedError ? err.status : 500;
+        const type = err instanceof OpenAIRequestError ? err.type : err instanceof UpstreamBlockedError ? err.type : 'server_error';
+        const code = err instanceof OpenAIRequestError ? err.code : err instanceof UpstreamBlockedError ? err.code : 'internal_error';
         res.status(status).json({
             error: {
                 message,
@@ -1144,6 +1149,8 @@ async function handleOpenAINonStream(
     const proxyHook = { onProxyTrace: (trace: any) => log.recordProxyTrace(trace) };
     let fullText = await sendCursorRequestFull(activeCursorReq, undefined, proxyHook);
     const hasTools = (body.tools?.length ?? 0) > 0;
+    let upstreamTextForBlockCheck = fullText;
+    let usedSyntheticFallback = false;
 
     // 日志记录在详细日志中
 
@@ -1178,6 +1185,8 @@ async function handleOpenAINonStream(
             if (!shouldRetry()) break;
         }
         if (shouldRetry()) {
+            usedSyntheticFallback = true;
+            upstreamTextForBlockCheck = fullText;
             if (hasTools) {
                 // 记录在详细日志
                 fullText = 'I understand the request. Let me analyze the information and proceed with the appropriate action.';
@@ -1194,6 +1203,12 @@ async function handleOpenAINonStream(
     if (hasTools) {
         fullText = await autoContinueCursorToolResponseFull(activeCursorReq, fullText, hasTools);
     }
+
+    if (!usedSyntheticFallback) {
+        upstreamTextForBlockCheck = fullText;
+    }
+    log.recordRawResponse(fullText);
+    assertUpstreamResponseAllowed(upstreamTextForBlockCheck);
 
     let content: string | null = fullText;
     let toolCalls: OpenAIToolCall[] | undefined;
@@ -1389,11 +1404,15 @@ export async function handleOpenAIResponses(req: Request, res: Response): Promis
         }
     } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
-        log.fail(message);
+        if (err instanceof UpstreamBlockedError) {
+            log.intercepted(`上游关键词拦截 (Responses): ${err.matchedKeyword}`);
+        } else {
+            log.fail(message);
+        }
         console.error(`[OpenAI] /v1/responses 处理失败:`, message);
-        const status = err instanceof OpenAIRequestError ? err.status : 500;
-        const type = err instanceof OpenAIRequestError ? err.type : 'server_error';
-        const code = err instanceof OpenAIRequestError ? err.code : 'internal_error';
+        const status = err instanceof OpenAIRequestError ? err.status : err instanceof UpstreamBlockedError ? err.status : 500;
+        const type = err instanceof OpenAIRequestError ? err.type : err instanceof UpstreamBlockedError ? err.type : 'server_error';
+        const code = err instanceof OpenAIRequestError ? err.code : err instanceof UpstreamBlockedError ? err.code : 'internal_error';
         res.status(status).json({
             error: { message, type, code },
         });
@@ -1787,6 +1806,8 @@ async function handleResponsesNonStream(
     const proxyHook = { onProxyTrace: (trace: any) => log.recordProxyTrace(trace) };
     let fullText = await sendCursorRequestFull(activeCursorReq, undefined, proxyHook);
     const hasTools = (anthropicReq.tools?.length ?? 0) > 0;
+    let upstreamTextForBlockCheck = fullText;
+    let usedSyntheticFallback = false;
 
     // Thinking 提取
     if (hasLeadingThinking(fullText)) {
@@ -1807,6 +1828,8 @@ async function handleResponsesNonStream(
             if (!shouldRetry()) break;
         }
         if (shouldRetry() && fixedFallbackResponsesEnabled()) {
+            usedSyntheticFallback = true;
+            upstreamTextForBlockCheck = fullText;
             if (isToolCapabilityQuestion(anthropicReq)) {
                 fullText = CLAUDE_TOOLS_RESPONSE;
             } else {
@@ -1818,6 +1841,12 @@ async function handleResponsesNonStream(
     if (hasTools) {
         fullText = await autoContinueCursorToolResponseFull(activeCursorReq, fullText, hasTools);
     }
+
+    if (!usedSyntheticFallback) {
+        upstreamTextForBlockCheck = fullText;
+    }
+    log.recordRawResponse(fullText);
+    assertUpstreamResponseAllowed(upstreamTextForBlockCheck);
 
     fullText = sanitizeResponse(fullText);
 

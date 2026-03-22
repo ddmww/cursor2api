@@ -167,6 +167,19 @@ fixed_fallback_responses: true
 #   - "无法为您提供"
 #   - "this request is outside"
 
+# ==================== 上游拦截转错误（可选，默认关闭） ====================
+# 当最终保留的上游回复中包含以下任一关键词时，proxy 不再向下游返回 200 成功响应，
+# 而是直接返回 502 错误，提示用户当前请求被上游渠道商拦截，请换个说法或稍后重试。
+# 匹配规则为“不区分大小写的包含关系”，适合拦截固定拒绝文案或身份泄漏文本。
+# 💡 会在自动重试全部结束之后才判断，避免首次拒绝、重试成功时误拦截。
+# upstream_blocker:
+#   enabled: true
+#   keywords:
+#     - "cursor"
+#     - "I cannot fulfill this request."
+#     - "I am prohibited from generating content that depicts the sexualization"
+#   message: "上游渠道商拦截了当前请求，请尝试换个说法后重试，或稍后再试。"
+
 # 浏览器指纹配置
 fingerprint:
   user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
