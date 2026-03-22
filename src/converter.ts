@@ -759,8 +759,11 @@ I will ALWAYS use this exact \`\`\`json action\`\`\` block format for tool calls
         totalChars += m.parts.reduce((s, p) => s + (p.text?.length ?? 0), 0);
     }
 
+    const requestedModel = typeof req.model === 'string' ? req.model.trim() : '';
+    const cursorModel = requestedModel || config.cursorModel;
+
     return {
-        model: config.cursorModel,
+        model: cursorModel,
         id: deriveConversationId(req),
         messages,
         trigger: 'submit-message',
@@ -1607,4 +1610,5 @@ function guessMediaType(url: string): string {
     if (lower.includes('.bmp')) return 'image/bmp';
     return 'image/jpeg'; // 默认 JPEG
 }
+
 

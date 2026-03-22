@@ -69,7 +69,7 @@ cp config.yaml.example config.yaml
 |--------|------|--------|
 | `port` | 服务端口 | `3010` |
 | `auth_tokens` | API 鉴权 token 列表（公网部署推荐配置） | 不配置则全部放行 |
-| `cursor_model` | 使用的模型 | `anthropic/claude-sonnet-4.6` |
+| `cursor_model` | 默认模型（请求未传 `model` 时使用） | `anthropic/claude-sonnet-4.6` |
 | `thinking.enabled` | Thinking 开关（最高优先级） | 跟随客户端 |
 | `compression.enabled` | 压缩开关 | `true` |
 | `compression.level` | 压缩级别 1-3 | `2` (中等) |
@@ -297,7 +297,7 @@ AI 按此格式输出 → 我们解析并转换为标准的 Anthropic `tool_use`
 | `CONFIG_PATH` | 配置文件路径（例如 `/app/data/config.yaml`） |
 | `AUTH_TOKEN` | API 鉴权 token（逗号分隔多个） |
 | `PROXY` | 全局代理地址 |
-| `CURSOR_MODEL` | Cursor 使用的模型 |
+| `CURSOR_MODEL` | 默认模型（请求未传 `model` 时使用） |
 | `THINKING_ENABLED` | Thinking 开关 (`true`/`false`) |
 | `COMPRESSION_ENABLED` | 压缩开关 (`true`/`false`) |
 | `COMPRESSION_LEVEL` | 压缩级别 (`1`/`2`/`3`) |
@@ -324,3 +324,4 @@ AI 按此格式输出 → 我们解析并转换为标准的 Anthropic `tool_use`
 ## License
 
 [MIT](LICENSE)
+

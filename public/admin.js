@@ -6,7 +6,7 @@ const CONFIG_GROUPS=[
     {path:'port',label:'服务端口',type:'number',help:'修改后需要重启服务才会切换监听端口。',min:1,max:65535},
     {path:'timeout',label:'请求超时（秒）',type:'number',help:'上游请求的超时时间。',min:1},
     {path:'proxy',label:'全局代理',type:'text',help:'例如 http://127.0.0.1:7890。',mono:true,placeholder:'http://127.0.0.1:7890'},
-    {path:'cursor_model',label:'Cursor 模型',type:'text',help:'默认使用的 Cursor 模型标识。',mono:true,placeholder:'anthropic/claude-sonnet-4.6'}
+    {path:'cursor_model',label:'Cursor 默认模型',type:'text',help:'请求未传 model 时回退到这里。',mono:true,placeholder:'anthropic/claude-sonnet-4.6'}
   ]},
   {id:'security',title:'鉴权与安全',fields:[
     {path:'auth_tokens',label:'Auth Tokens',type:'list-secret',help:'每行一个 token。为空则 API 与后台开放。',mono:true,rows:4},
@@ -225,3 +225,4 @@ document.getElementById('configGroups').addEventListener('change',e=>{const path
 window.addEventListener('popstate',()=>switchDashboardTab(new URLSearchParams(window.location.search).get('tab'),false));
 
 loadConfig().then(()=>switchDashboardTab(dashboardTab,false)).catch(err=>{console.error(err);showAdminToast(err?.message||'后台配置加载失败。','error')});
+
