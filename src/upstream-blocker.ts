@@ -26,9 +26,10 @@ export function findUpstreamBlockedKeyword(text: string): string | undefined {
     const cfg = getConfig().upstreamBlocker;
     if (!cfg.enabled || !text) return undefined;
 
-    const normalizedText = text.toLocaleLowerCase();
+    const haystack = cfg.caseSensitive ? text : text.toLocaleLowerCase();
     for (const keyword of normalizeKeywords(cfg.keywords)) {
-        if (normalizedText.includes(keyword.toLocaleLowerCase())) {
+        const needle = cfg.caseSensitive ? keyword : keyword.toLocaleLowerCase();
+        if (haystack.includes(needle)) {
             return keyword;
         }
     }
@@ -41,4 +42,3 @@ export function assertUpstreamResponseAllowed(text: string): void {
     const message = getConfig().upstreamBlocker.message?.trim() || DEFAULT_UPSTREAM_BLOCK_MESSAGE;
     throw new UpstreamBlockedError(matchedKeyword, message);
 }
-

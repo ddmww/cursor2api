@@ -22,7 +22,8 @@ const CONFIG_GROUPS=[
     {path:'fixed_fallback_responses',label:'固定身份/能力回复',type:'checkbox',help:'关闭后，不再注入 Claude 身份与能力说明模板。'},
     {path:'refusal_patterns',label:'自定义拒绝检测规则',type:'list',help:'每行一条规则。',mono:true,rows:5,full:true},
     {path:'upstream_blocker.enabled',label:'上游拦截转错误',type:'checkbox',help:'命中关键词时，不再向下游返回 200 成功响应，而是改为上游拦截错误。'},
-    {path:'upstream_blocker.keywords',label:'上游拦截关键词',type:'list',help:'每行一个关键词，大小写不敏感，按包含关系匹配。建议填写 Cursor 身份泄漏或固定拒绝文案。',mono:true,rows:5,full:true},
+    {path:'upstream_blocker.case_sensitive',label:'关键词大小写敏感',type:'checkbox',help:'关闭时按大小写不敏感匹配；开启后必须大小写完全一致才会命中。'},
+    {path:'upstream_blocker.keywords',label:'上游拦截关键词',type:'list',help:'每行一个关键词，按包含关系匹配。建议填写 Cursor 身份泄漏或固定拒绝文案。',mono:true,rows:5,full:true},
     {path:'upstream_blocker.message',label:'上游拦截报错文案',type:'textarea',help:'返回给下游的错误提示。建议提示用户换个说法或稍后重试。',mono:true,rows:3,full:true}
   ]},
   {id:'behavior',title:'上下文与行为',fields:[

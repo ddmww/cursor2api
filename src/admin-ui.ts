@@ -29,6 +29,7 @@ interface EditableYamlConfig {
     };
     upstream_blocker: {
         enabled: boolean;
+        case_sensitive: boolean;
         keywords: StringList;
         message: string;
     };
@@ -88,6 +89,7 @@ const LIVE_RELOAD_FIELDS = [
     'proxy_pool.health_check.interval_seconds',
     'proxy_pool.health_check.url',
     'upstream_blocker.enabled',
+    'upstream_blocker.case_sensitive',
     'upstream_blocker.keywords',
     'upstream_blocker.message',
     'cursor_model',
@@ -126,6 +128,7 @@ const ENV_OVERRIDE_MAP: Record<string, string> = {
     timeout: 'TIMEOUT',
     proxy: 'PROXY',
     'upstream_blocker.enabled': 'UPSTREAM_BLOCKER_ENABLED',
+    'upstream_blocker.case_sensitive': 'UPSTREAM_BLOCKER_CASE_SENSITIVE',
     'upstream_blocker.keywords': 'UPSTREAM_BLOCKER_KEYWORDS',
     'upstream_blocker.message': 'UPSTREAM_BLOCKER_MESSAGE',
     cursor_model: 'CURSOR_MODEL',
@@ -251,6 +254,7 @@ function getDefaultEditableConfig(): EditableYamlConfig {
         },
         upstream_blocker: {
             enabled: false,
+            case_sensitive: false,
             keywords: [],
             message: '上游渠道商拦截了当前请求，请尝试换个说法后重试，或稍后再试。',
         },
@@ -340,6 +344,7 @@ function readEditableConfigFile(): { config: EditableYamlConfig; fileExists: boo
             },
             upstream_blocker: {
                 enabled: asBoolean(upstreamBlocker.enabled, fallback.upstream_blocker.enabled),
+                case_sensitive: asBoolean(upstreamBlocker.case_sensitive, fallback.upstream_blocker.case_sensitive),
                 keywords: asStringList(upstreamBlocker.keywords),
                 message: asString(upstreamBlocker.message, fallback.upstream_blocker.message),
             },
@@ -516,6 +521,7 @@ function validateConfig(input: unknown): { config?: EditableYamlConfig; errors: 
 
     const upstreamBlocker = asObject(raw.upstream_blocker);
     normalized.upstream_blocker.enabled = asBoolean(upstreamBlocker.enabled, normalized.upstream_blocker.enabled);
+    normalized.upstream_blocker.case_sensitive = asBoolean(upstreamBlocker.case_sensitive, normalized.upstream_blocker.case_sensitive);
     normalized.upstream_blocker.keywords = asStringList(upstreamBlocker.keywords);
     normalized.upstream_blocker.message = asString(upstreamBlocker.message, normalized.upstream_blocker.message).trim();
     if (normalized.upstream_blocker.enabled && normalized.upstream_blocker.keywords.length === 0) {
@@ -637,6 +643,7 @@ function writeEditableConfig(config: EditableYamlConfig): void {
     doc.setIn(['proxy_pool', 'health_check', 'interval_seconds'], config.proxy_pool.health_check.interval_seconds);
     doc.setIn(['proxy_pool', 'health_check', 'url'], config.proxy_pool.health_check.url);
     doc.setIn(['upstream_blocker', 'enabled'], config.upstream_blocker.enabled);
+    doc.setIn(['upstream_blocker', 'case_sensitive'], config.upstream_blocker.case_sensitive);
     setOptionalStringList(doc, ['upstream_blocker', 'keywords'], config.upstream_blocker.keywords);
     doc.setIn(['upstream_blocker', 'message'], config.upstream_blocker.message);
     doc.setIn(['cursor_model'], config.cursor_model);

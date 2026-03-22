@@ -45,9 +45,10 @@ function normalizeKeywords(keywords) {
 function findUpstreamBlockedKeyword(text) {
     const cfg = mockConfig.upstreamBlocker;
     if (!cfg.enabled || !text) return undefined;
-    const normalizedText = String(text).toLocaleLowerCase();
+    const haystack = cfg.caseSensitive ? String(text) : String(text).toLocaleLowerCase();
     for (const keyword of normalizeKeywords(cfg.keywords)) {
-        if (normalizedText.includes(keyword.toLocaleLowerCase())) {
+        const needle = cfg.caseSensitive ? keyword : keyword.toLocaleLowerCase();
+        if (haystack.includes(needle)) {
             return keyword;
         }
     }
@@ -68,6 +69,7 @@ console.log('\n📦 [1] upstream_blocker 关键词匹配\n');
 mockConfig = {
     upstreamBlocker: {
         enabled: true,
+        caseSensitive: false,
         keywords: ['cursor', 'I cannot fulfill this request.'],
         message: '上游渠道商拦截了当前请求，请换个说法后重试。',
     },
@@ -100,6 +102,7 @@ console.log('\n📦 [2] 开关关闭时不拦截\n');
 mockConfig = {
     upstreamBlocker: {
         enabled: false,
+        caseSensitive: false,
         keywords: ['cursor'],
         message: DEFAULT_UPSTREAM_BLOCK_MESSAGE,
     },
@@ -114,9 +117,29 @@ test('关闭开关后不抛错', () => {
     assertUpstreamResponseAllowed('Cursor support assistant');
 });
 
+console.log('\n📦 [3] 大小写敏感开关\n');
+
+mockConfig = {
+    upstreamBlocker: {
+        enabled: true,
+        caseSensitive: true,
+        keywords: ['Cursor'],
+        message: DEFAULT_UPSTREAM_BLOCK_MESSAGE,
+    },
+};
+
+test('开启大小写敏感后，大小写完全一致才命中', () => {
+    const matched = findUpstreamBlockedKeyword('Cursor support assistant');
+    assert(matched === 'Cursor', `Expected "Cursor", got ${matched}`);
+});
+
+test('开启大小写敏感后，大小写不同不命中', () => {
+    const matched = findUpstreamBlockedKeyword('cursor support assistant');
+    assert(matched === undefined, `Expected no match, got ${matched}`);
+});
+
 console.log(`\n✅ 通过 ${passed} 项`);
 if (failed > 0) {
     console.error(`❌ 失败 ${failed} 项`);
     process.exit(1);
 }
-

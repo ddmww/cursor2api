@@ -67,6 +67,7 @@ function parseYamlConfig(defaults: AppConfig): { config: AppConfig; raw: Record<
         if (yaml.upstream_blocker) {
             result.upstreamBlocker = {
                 enabled: yaml.upstream_blocker.enabled === true,
+                caseSensitive: yaml.upstream_blocker.case_sensitive === true,
                 keywords: Array.isArray(yaml.upstream_blocker.keywords)
                     ? yaml.upstream_blocker.keywords.map(String).map((s: string) => s.trim()).filter(Boolean)
                     : [],
@@ -165,6 +166,9 @@ function applyEnvOverrides(cfg: AppConfig): void {
     if (process.env.UPSTREAM_BLOCKER_ENABLED !== undefined) {
         cfg.upstreamBlocker.enabled = process.env.UPSTREAM_BLOCKER_ENABLED === 'true' || process.env.UPSTREAM_BLOCKER_ENABLED === '1';
     }
+    if (process.env.UPSTREAM_BLOCKER_CASE_SENSITIVE !== undefined) {
+        cfg.upstreamBlocker.caseSensitive = process.env.UPSTREAM_BLOCKER_CASE_SENSITIVE === 'true' || process.env.UPSTREAM_BLOCKER_CASE_SENSITIVE === '1';
+    }
     if (process.env.UPSTREAM_BLOCKER_KEYWORDS !== undefined) {
         cfg.upstreamBlocker.keywords = process.env.UPSTREAM_BLOCKER_KEYWORDS
             .split('\n')
@@ -260,6 +264,7 @@ function defaultConfig(): AppConfig {
         },
         upstreamBlocker: {
             enabled: false,
+            caseSensitive: false,
             keywords: [],
             message: '上游渠道商拦截了当前请求，请尝试换个说法后重试，或稍后再试。',
         },
