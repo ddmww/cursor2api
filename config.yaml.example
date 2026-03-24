@@ -35,6 +35,7 @@ timeout: 120
 #     - "http://mihomo:10002"
 #     - "http://mihomo:10003"
 #   cooldown_seconds: 30
+#   fresh_connection_per_request: false
 #   health_check:
 #     enabled: true
 #     interval_seconds: 60

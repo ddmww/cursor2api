@@ -2,6 +2,7 @@ import { getConfig } from './config.js';
 import type { AnthropicMessage, AnthropicContentBlock } from './types.js';
 import {
     fetchWithProxyFailover,
+    releaseProxySelection,
     reportProxySelectionSuccess,
 } from './proxy-agent.js';
 import { createWorker } from 'tesseract.js';
@@ -155,12 +156,16 @@ async function callVisionAPI(imageBlocks: AnthropicContentBlock[]): Promise<stri
         body: JSON.stringify(payload),
     }, 'vision');
 
-    if (!res.ok) {
-        const text = await res.text();
-        throw new Error(`Vision API returned status ${res.status}: ${text}`);
-    }
+    try {
+        if (!res.ok) {
+            const text = await res.text();
+            throw new Error(`Vision API returned status ${res.status}: ${text}`);
+        }
 
-    const data = await res.json() as any;
-    reportProxySelectionSuccess(selection);
-    return data.choices?.[0]?.message?.content || 'No description returned.';
+        const data = await res.json() as any;
+        reportProxySelectionSuccess(selection);
+        return data.choices?.[0]?.message?.content || 'No description returned.';
+    } finally {
+        await releaseProxySelection(selection);
+    }
 }

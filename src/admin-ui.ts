@@ -21,6 +21,7 @@ interface EditableYamlConfig {
         enabled: boolean;
         urls: StringList;
         cooldown_seconds: number;
+        fresh_connection_per_request: boolean;
         health_check: {
             enabled: boolean;
             interval_seconds: number;
@@ -85,6 +86,7 @@ const LIVE_RELOAD_FIELDS = [
     'proxy_pool.enabled',
     'proxy_pool.urls',
     'proxy_pool.cooldown_seconds',
+    'proxy_pool.fresh_connection_per_request',
     'proxy_pool.health_check.enabled',
     'proxy_pool.health_check.interval_seconds',
     'proxy_pool.health_check.url',
@@ -138,6 +140,7 @@ const ENV_OVERRIDE_MAP: Record<string, string> = {
     'thinking.enabled': 'THINKING_ENABLED',
     'compression.enabled': 'COMPRESSION_ENABLED',
     'compression.level': 'COMPRESSION_LEVEL',
+    'proxy_pool.fresh_connection_per_request': 'PROXY_POOL_FRESH_CONNECTION_PER_REQUEST',
     'tools.passthrough': 'TOOLS_PASSTHROUGH',
     'tools.disabled': 'TOOLS_DISABLED',
     'logging.file_enabled': 'LOG_FILE_ENABLED',
@@ -246,6 +249,7 @@ function getDefaultEditableConfig(): EditableYamlConfig {
             enabled: false,
             urls: [],
             cooldown_seconds: 30,
+            fresh_connection_per_request: false,
             health_check: {
                 enabled: false,
                 interval_seconds: 60,
@@ -336,6 +340,7 @@ function readEditableConfigFile(): { config: EditableYamlConfig; fileExists: boo
                 enabled: asBoolean(proxyPool.enabled, fallback.proxy_pool.enabled),
                 urls: asStringList(proxyPool.urls),
                 cooldown_seconds: asInt(proxyPool.cooldown_seconds, fallback.proxy_pool.cooldown_seconds),
+                fresh_connection_per_request: asBoolean(proxyPool.fresh_connection_per_request, fallback.proxy_pool.fresh_connection_per_request),
                 health_check: {
                     enabled: asBoolean(proxyPoolHealthCheck.enabled, fallback.proxy_pool.health_check.enabled),
                     interval_seconds: asInt(proxyPoolHealthCheck.interval_seconds, fallback.proxy_pool.health_check.interval_seconds),
@@ -493,6 +498,7 @@ function validateConfig(input: unknown): { config?: EditableYamlConfig; errors: 
     normalized.proxy_pool.enabled = asBoolean(proxyPool.enabled, normalized.proxy_pool.enabled);
     normalized.proxy_pool.urls = asStringList(proxyPool.urls);
     normalized.proxy_pool.cooldown_seconds = asInt(proxyPool.cooldown_seconds, normalized.proxy_pool.cooldown_seconds);
+    normalized.proxy_pool.fresh_connection_per_request = asBoolean(proxyPool.fresh_connection_per_request, normalized.proxy_pool.fresh_connection_per_request);
     normalized.proxy_pool.health_check.enabled = asBoolean(proxyPoolHealthCheck.enabled, normalized.proxy_pool.health_check.enabled);
     normalized.proxy_pool.health_check.interval_seconds = asInt(proxyPoolHealthCheck.interval_seconds, normalized.proxy_pool.health_check.interval_seconds);
     normalized.proxy_pool.health_check.url = asString(proxyPoolHealthCheck.url, normalized.proxy_pool.health_check.url).trim();
@@ -639,6 +645,7 @@ function writeEditableConfig(config: EditableYamlConfig): void {
     doc.setIn(['proxy_pool', 'enabled'], config.proxy_pool.enabled);
     setOptionalStringList(doc, ['proxy_pool', 'urls'], config.proxy_pool.urls);
     doc.setIn(['proxy_pool', 'cooldown_seconds'], config.proxy_pool.cooldown_seconds);
+    doc.setIn(['proxy_pool', 'fresh_connection_per_request'], config.proxy_pool.fresh_connection_per_request);
     doc.setIn(['proxy_pool', 'health_check', 'enabled'], config.proxy_pool.health_check.enabled);
     doc.setIn(['proxy_pool', 'health_check', 'interval_seconds'], config.proxy_pool.health_check.interval_seconds);
     doc.setIn(['proxy_pool', 'health_check', 'url'], config.proxy_pool.health_check.url);

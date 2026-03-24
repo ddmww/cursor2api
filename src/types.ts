@@ -104,6 +104,7 @@ export interface ProxyPoolConfig {
     enabled: boolean;
     urls: string[];
     cooldownSeconds: number;
+    freshConnectionPerRequest: boolean;
     healthCheck: {
         enabled: boolean;
         intervalSeconds: number;

@@ -25,6 +25,7 @@ export interface ProxySelection {
     dispatcher?: Dispatcher;
     url?: string;
     source: ProxySource;
+    release?: () => Promise<void>;
 }
 
 export interface ProxyTraceHook {
@@ -32,6 +33,23 @@ export interface ProxyTraceHook {
 }
 
 const dispatcherCache = new Map<string, ProxyAgent>();
+
+function shouldUseFreshProxyConnection(): boolean {
+    return getConfig().proxyPool.freshConnectionPerRequest === true;
+}
+
+function createRelease(agent: ProxyAgent): () => Promise<void> {
+    let released = false;
+    return async () => {
+        if (released) return;
+        released = true;
+        try {
+            await agent.close();
+        } catch {
+            // ignore close failures
+        }
+    };
+}
 
 function getCachedProxyAgent(url: string): ProxyAgent {
     const cached = dispatcherCache.get(url);
@@ -49,11 +67,24 @@ function toSelection(url: string | undefined, source: ProxySource): ProxySelecti
         console.warn(`[Proxy] 跳过无效代理 ${url}: ${validationError}`);
         return { source: 'direct' };
     }
+    if (shouldUseFreshProxyConnection()) {
+        const agent = new ProxyAgent(url);
+        return {
+            url,
+            source,
+            dispatcher: agent,
+            release: createRelease(agent),
+        };
+    }
     return {
         url,
         source,
         dispatcher: getCachedProxyAgent(url),
     };
+}
+
+export async function releaseProxySelection(selection?: ProxySelection): Promise<void> {
+    await selection?.release?.();
 }
 
 export function selectCursorProxy(options?: { excludeUrls?: string[] }): ProxySelection {
@@ -178,6 +209,7 @@ export async function fetchWithProxyFailover(
                     } catch {
                         // ignore drain errors
                     }
+                    await releaseProxySelection(selection);
                     continue;
                 }
             }
@@ -185,6 +217,7 @@ export async function fetchWithProxyFailover(
             return { response, selection, trace };
         } catch (error) {
             const retryable = selection.source === 'pool' && selection.url && isRetryableTransportError(error, options?.signal);
+            await releaseProxySelection(selection);
             if (!retryable) throw error;
 
             markSelectionFailure(selection, error, false);

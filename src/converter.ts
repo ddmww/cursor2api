@@ -28,6 +28,7 @@ import { applyVisionInterceptor } from './vision.js';
 import { fixToolCallArguments } from './tool-fixer.js';
 import {
     fetchWithProxyFailover,
+    releaseProxySelection,
     reportProxySelectionSuccess,
 } from './proxy-agent.js';
 
@@ -1536,31 +1537,35 @@ async function preprocessImages(messages: AnthropicMessage[]): Promise<void> {
                                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
                                 },
                             }, 'vision');
-                            if (!response.ok) {
-                                const text = await response.text();
-                                throw new Error(`HTTP ${response.status}${text ? ` - ${text}` : ''}`);
-                            }
-                            const buffer = Buffer.from(await response.arrayBuffer());
-                            const contentType = response.headers.get('content-type') || 'image/jpeg';
-                            const mediaType = contentType.split(';')[0].trim();
-                            // ★ SVG 是矢量图格式（XML），无法被 OCR 或 Vision API 处理
-                            //   tesseract.js 处理 SVG 会抛出 unhandled error 导致进程崩溃（#69）
-                            if (mediaType === 'image/svg+xml' || imageUrl.toLowerCase().endsWith('.svg')) {
-                                console.log(`[Converter] ⚠️ 跳过 SVG 矢量图（不支持 OCR/Vision）: ${imageUrl.substring(0, 100)}`);
+                            try {
+                                if (!response.ok) {
+                                    const text = await response.text();
+                                    throw new Error(`HTTP ${response.status}${text ? ` - ${text}` : ''}`);
+                                }
+                                const buffer = Buffer.from(await response.arrayBuffer());
+                                const contentType = response.headers.get('content-type') || 'image/jpeg';
+                                const mediaType = contentType.split(';')[0].trim();
+                                // ★ SVG 是矢量图格式（XML），无法被 OCR 或 Vision API 处理
+                                //   tesseract.js 处理 SVG 会抛出 unhandled error 导致进程崩溃（#69）
+                                if (mediaType === 'image/svg+xml' || imageUrl.toLowerCase().endsWith('.svg')) {
+                                    console.log(`[Converter] ⚠️ 跳过 SVG 矢量图（不支持 OCR/Vision）: ${imageUrl.substring(0, 100)}`);
+                                    msg.content[i] = {
+                                        type: 'text',
+                                        text: `[SVG vector image from URL: ${imageUrl}. SVG images are XML-based vector graphics and cannot be processed by OCR/Vision. The image likely contains a logo, icon, badge, or diagram.]`,
+                                    } as any;
+                                    continue;
+                                }
+                                const base64Data = buffer.toString('base64');
+                                reportProxySelectionSuccess(selection);
+                                // 替换为 base64 格式
                                 msg.content[i] = {
-                                    type: 'text',
-                                    text: `[SVG vector image from URL: ${imageUrl}. SVG images are XML-based vector graphics and cannot be processed by OCR/Vision. The image likely contains a logo, icon, badge, or diagram.]`,
-                                } as any;
-                                continue;
+                                    ...block,
+                                    source: { type: 'base64', media_type: mediaType, data: base64Data },
+                                };
+                                console.log(`[Converter] ✅ 图片下载成功: ${mediaType}, ${Math.round(base64Data.length * 0.75 / 1024)}KB`);
+                            } finally {
+                                await releaseProxySelection(selection);
                             }
-                            const base64Data = buffer.toString('base64');
-                            reportProxySelectionSuccess(selection);
-                            // 替换为 base64 格式
-                            msg.content[i] = {
-                                ...block,
-                                source: { type: 'base64', media_type: mediaType, data: base64Data },
-                            };
-                            console.log(`[Converter] ✅ 图片下载成功: ${mediaType}, ${Math.round(base64Data.length * 0.75 / 1024)}KB`);
                         } catch (err) {
                             console.error(`[Converter] ❌ 远程图片下载失败 (${imageUrl.substring(0, 80)}):`, err);
                             // 下载失败时替换为错误提示文本

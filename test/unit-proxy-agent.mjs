@@ -50,6 +50,7 @@ let runtimeEntries = new Map();
 let runtimeUrls = [];
 let roundRobinIndex = 0;
 const failureMarks = [];
+const dispatcherCache = new Map();
 
 function resetState() {
     mockConfig = {
@@ -59,6 +60,7 @@ function resetState() {
             enabled: false,
             urls: [],
             cooldownSeconds: 30,
+            freshConnectionPerRequest: false,
             healthCheck: { enabled: false, intervalSeconds: 60, url: 'http://cp.cloudflare.com/generate_204' },
         },
     };
@@ -66,6 +68,7 @@ function resetState() {
     runtimeUrls = [];
     roundRobinIndex = 0;
     failureMarks.length = 0;
+    dispatcherCache.clear();
 }
 
 function validateHttpProxyUrl(url) {
@@ -129,16 +132,37 @@ function selectProxyPoolUrl(exclude = []) {
 
 function selectCursorProxy(exclude = []) {
     const poolUrl = selectProxyPoolUrl(exclude);
-    if (poolUrl) return { source: 'pool', url: poolUrl };
-    if (mockConfig.proxy && !exclude.includes(mockConfig.proxy)) return { source: 'fallback', url: mockConfig.proxy };
+    if (poolUrl) return toSelection(poolUrl, 'pool');
+    if (mockConfig.proxy && !exclude.includes(mockConfig.proxy)) return toSelection(mockConfig.proxy, 'fallback');
     return { source: 'direct' };
 }
 
 function selectVisionProxy(exclude = []) {
     if (mockConfig.vision?.proxy && !exclude.includes(mockConfig.vision.proxy)) {
-        return { source: 'vision', url: mockConfig.vision.proxy };
+        return toSelection(mockConfig.vision.proxy, 'vision');
     }
     return selectCursorProxy(exclude);
+}
+
+function toSelection(url, source) {
+    if (!url) return { source: 'direct' };
+    if (mockConfig.proxyPool.freshConnectionPerRequest) {
+        const agent = { id: randomId(), closed: false };
+        return {
+            source,
+            url,
+            dispatcher: agent,
+            release: async () => { agent.closed = true; },
+        };
+    }
+    if (!dispatcherCache.has(url)) {
+        dispatcherCache.set(url, { id: randomId(), closed: false });
+    }
+    return { source, url, dispatcher: dispatcherCache.get(url) };
+}
+
+function randomId() {
+    return Math.random().toString(36).slice(2, 10);
 }
 
 function markPoolFailure(url, reason, opts = {}) {
@@ -175,11 +199,13 @@ async function fetchWithProxyFailover(scope, fetchImpl) {
                 if (attempt < 2) {
                     excluded.add(selection.url);
                     previousUrl = selection.url;
+                    await selection.release?.();
                     continue;
                 }
             }
             return { response, selection, trace };
         } catch (error) {
+            await selection.release?.();
             if (!(selection.source === 'pool' && selection.url && isRetryableTransportError(error))) throw error;
             markPoolFailure(selection.url, error.message, { transport: true });
             trace.proxyFailures.push(error.message);
@@ -257,6 +283,19 @@ await test('Vision 独立代理优先于共享池', () => {
     const selection = selectVisionProxy();
     assertEqual(selection.source, 'vision');
     assertEqual(selection.url, 'http://vision-only:9000');
+});
+
+await test('启用每请求新建连接后，同一代理不会复用 dispatcher', async () => {
+    resetState();
+    mockConfig.proxyPool.enabled = true;
+    mockConfig.proxyPool.freshConnectionPerRequest = true;
+    mockConfig.proxyPool.urls = ['http://mihomo:10001'];
+    const first = selectCursorProxy();
+    const second = selectCursorProxy();
+    assert(first.dispatcher && second.dispatcher, '应存在 dispatcher');
+    assert(first.dispatcher !== second.dispatcher, '每次应创建新的 dispatcher');
+    await first.release?.();
+    assert(first.dispatcher.closed === true, '释放后应关闭临时 dispatcher');
 });
 
 console.log('\n📦 [3] 429 / 网络错误切换\n');

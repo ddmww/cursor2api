@@ -30,6 +30,7 @@ function parseYamlConfig(defaults: AppConfig): { config: AppConfig; raw: Record<
         proxyPool: {
             ...defaults.proxyPool,
             urls: [...defaults.proxyPool.urls],
+            freshConnectionPerRequest: defaults.proxyPool.freshConnectionPerRequest,
             healthCheck: { ...defaults.proxyPool.healthCheck },
         },
         upstreamBlocker: {
@@ -57,6 +58,7 @@ function parseYamlConfig(defaults: AppConfig): { config: AppConfig; raw: Record<
                     ? yaml.proxy_pool.urls.map(String).map((s: string) => s.trim()).filter(Boolean)
                     : [],
                 cooldownSeconds: typeof yaml.proxy_pool.cooldown_seconds === 'number' ? yaml.proxy_pool.cooldown_seconds : 30,
+                freshConnectionPerRequest: yaml.proxy_pool.fresh_connection_per_request === true,
                 healthCheck: {
                     enabled: healthCheck.enabled === true,
                     intervalSeconds: typeof healthCheck.interval_seconds === 'number' ? healthCheck.interval_seconds : 60,
@@ -163,6 +165,11 @@ function applyEnvOverrides(cfg: AppConfig): void {
     if (process.env.PORT) cfg.port = parseInt(process.env.PORT);
     if (process.env.TIMEOUT) cfg.timeout = parseInt(process.env.TIMEOUT);
     if (process.env.PROXY) cfg.proxy = process.env.PROXY;
+    if (process.env.PROXY_POOL_FRESH_CONNECTION_PER_REQUEST !== undefined) {
+        cfg.proxyPool.freshConnectionPerRequest =
+            process.env.PROXY_POOL_FRESH_CONNECTION_PER_REQUEST === 'true' ||
+            process.env.PROXY_POOL_FRESH_CONNECTION_PER_REQUEST === '1';
+    }
     if (process.env.UPSTREAM_BLOCKER_ENABLED !== undefined) {
         cfg.upstreamBlocker.enabled = process.env.UPSTREAM_BLOCKER_ENABLED === 'true' || process.env.UPSTREAM_BLOCKER_ENABLED === '1';
     }
@@ -256,6 +263,7 @@ function defaultConfig(): AppConfig {
             enabled: false,
             urls: [],
             cooldownSeconds: 30,
+            freshConnectionPerRequest: false,
             healthCheck: {
                 enabled: false,
                 intervalSeconds: 60,

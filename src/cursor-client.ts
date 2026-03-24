@@ -13,6 +13,7 @@ import type { CursorChatRequest, CursorSSEEvent } from './types.js';
 import { getConfig } from './config.js';
 import {
     fetchWithProxyFailover,
+    releaseProxySelection,
     reportProxySelectionFailure,
     reportProxySelectionSuccess,
     shouldRetryProxyTransportError,
@@ -77,6 +78,7 @@ async function sendCursorRequestInner(
     const headers = getChromeHeaders();
     const config = getConfig();
     const controller = new AbortController();
+    let finalSelection;
 
     if (externalSignal) {
         if (externalSignal.aborted) {
@@ -109,6 +111,7 @@ async function sendCursorRequestInner(
             signal: controller.signal,
             onProxyTrace: hook?.onProxyTrace,
         });
+        finalSelection = selection;
 
         if (!resp.ok) {
             const body = await resp.text();
@@ -201,6 +204,7 @@ async function sendCursorRequestInner(
         reportProxySelectionSuccess(selection);
     } finally {
         if (idleTimer) clearTimeout(idleTimer);
+        await releaseProxySelection(finalSelection);
     }
 }
 
