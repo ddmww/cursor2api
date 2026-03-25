@@ -86,6 +86,7 @@ cp config.yaml.example config.yaml
 | `logging.dir` | 日志存储目录 | `./logs` |
 | `logging.max_days` | 日志保留天数 | `7` |
 | `max_auto_continue` | 截断自动续写次数 (`0`=禁用，交由客户端续写) | `0` |
+| `plain_text_auto_continue` | 纯文本半句自动续写（仅在 `max_auto_continue>0` 时生效） | `false` |
 | `sanitize_response` | 响应内容清洗开关（替换 Cursor 身份引用为 Claude） | `false` |
 | `refusal_patterns` | 自定义拒绝检测规则列表（追加到内置规则） | 不配置 |
 | `upstream_blocker.*` | 命中上游关键词或空回复时改为返回 `500` 错误，支持大小写敏感与空回复开关 | 关闭 |
@@ -311,6 +312,7 @@ AI 按此格式输出 → 我们解析并转换为标准的 Anthropic `tool_use`
 | `LOG_FILE_ENABLED` | 日志文件持久化 (`true`/`false`) |
 | `LOG_DIR` | 日志文件目录 |
 | `MAX_AUTO_CONTINUE` | 截断自动续写次数 (`0`=禁用) |
+| `PLAIN_TEXT_AUTO_CONTINUE` | 纯文本半句自动续写 (`true`/`false`) |
 | `SANITIZE_RESPONSE` | 响应内容清洗开关 (`true`/`false`，默认 `false`) |
 
 > 💡 代理池 v1 只支持 `config.yaml` / `/admin` 配置，不提供环境变量列表格式。Mihomo 请暴露 `http://` 或 `https://` 的 mixed / http 入口，`socks5://` 不受支持。若要把服务器本机直连也混进轮询，可在 `proxy_pool.urls` 里单独加一行 `direct`。

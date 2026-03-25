@@ -30,6 +30,7 @@ const CONFIG_GROUPS=[
   ]},
   {id:'behavior',title:'上下文与行为',fields:[
     {path:'max_auto_continue',label:'自动续写次数',type:'number',help:'0 表示禁用。',min:0},
+    {path:'plain_text_auto_continue',label:'纯文本半句自动续写',type:'checkbox',help:'启用后，长纯文本回复如果明显停在半句中间，会在内部自动补续写。默认关闭。'},
     {path:'max_history_messages',label:'历史消息上限',type:'number',help:'-1 表示不限制。',min:-1},
     {path:'thinking.enabled',label:'强制启用 Thinking',type:'checkbox',help:'覆盖客户端的 thinking 选择。'}
   ]},

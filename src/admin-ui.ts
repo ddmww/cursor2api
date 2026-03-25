@@ -38,6 +38,7 @@ interface EditableYamlConfig {
     cursor_model: string;
     auth_tokens: StringList;
     max_auto_continue: number;
+    plain_text_auto_continue: boolean;
     max_history_messages: number;
     thinking: {
         enabled: boolean;
@@ -99,6 +100,7 @@ const LIVE_RELOAD_FIELDS = [
     'cursor_model',
     'auth_tokens',
     'max_auto_continue',
+    'plain_text_auto_continue',
     'max_history_messages',
     'thinking.enabled',
     'compression.enabled',
@@ -139,6 +141,7 @@ const ENV_OVERRIDE_MAP: Record<string, string> = {
     cursor_model: 'CURSOR_MODEL',
     auth_tokens: 'AUTH_TOKEN',
     max_auto_continue: 'MAX_AUTO_CONTINUE',
+    plain_text_auto_continue: 'PLAIN_TEXT_AUTO_CONTINUE',
     max_history_messages: 'MAX_HISTORY_MESSAGES',
     'thinking.enabled': 'THINKING_ENABLED',
     'compression.enabled': 'COMPRESSION_ENABLED',
@@ -269,6 +272,7 @@ function getDefaultEditableConfig(): EditableYamlConfig {
         cursor_model: 'anthropic/claude-sonnet-4.6',
         auth_tokens: [],
         max_auto_continue: 0,
+        plain_text_auto_continue: false,
         max_history_messages: -1,
         thinking: { enabled: false },
         compression: {
@@ -361,6 +365,7 @@ function readEditableConfigFile(): { config: EditableYamlConfig; fileExists: boo
             cursor_model: asString(raw.cursor_model, fallback.cursor_model),
             auth_tokens: asStringList(raw.auth_tokens),
             max_auto_continue: asInt(raw.max_auto_continue, fallback.max_auto_continue),
+            plain_text_auto_continue: asBoolean(raw.plain_text_auto_continue, fallback.plain_text_auto_continue),
             max_history_messages: asInt(raw.max_history_messages, fallback.max_history_messages),
             thinking: {
                 enabled: asBoolean(thinking.enabled, fallback.thinking.enabled),
@@ -554,6 +559,7 @@ function validateConfig(input: unknown): { config?: EditableYamlConfig; errors: 
     if (!Number.isInteger(normalized.max_auto_continue) || normalized.max_auto_continue < 0) {
         errors.max_auto_continue = 'max_auto_continue 必须是大于等于 0 的整数。';
     }
+    normalized.plain_text_auto_continue = asBoolean(raw.plain_text_auto_continue, normalized.plain_text_auto_continue);
 
     normalized.max_history_messages = asInt(raw.max_history_messages, normalized.max_history_messages);
     if (!Number.isInteger(normalized.max_history_messages) || normalized.max_history_messages < -1) {
@@ -663,6 +669,7 @@ function writeEditableConfig(config: EditableYamlConfig): void {
     doc.setIn(['cursor_model'], config.cursor_model);
     setOptionalStringList(doc, ['auth_tokens'], config.auth_tokens);
     doc.setIn(['max_auto_continue'], config.max_auto_continue);
+    doc.setIn(['plain_text_auto_continue'], config.plain_text_auto_continue);
     doc.setIn(['max_history_messages'], config.max_history_messages);
     doc.setIn(['thinking', 'enabled'], config.thinking.enabled);
     doc.setIn(['compression', 'enabled'], config.compression.enabled);

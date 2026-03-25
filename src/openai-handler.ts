@@ -32,8 +32,8 @@ import { createRequestLogger, type RequestLogger } from './logger.js';
 import { createIncrementalTextStreamer, hasLeadingThinking, splitLeadingThinkingBlocks, stripThinkingTags } from './streaming-text.js';
 import { assertUpstreamResponseAllowed, UpstreamBlockedError } from './upstream-blocker.js';
 import {
-    autoContinueCursorToolResponseFull,
-    autoContinueCursorToolResponseStream,
+    autoContinueCursorResponseFull,
+    autoContinueCursorResponseStream,
     isRefusal,
     sanitizeResponse,
     isIdentityProbe,
@@ -47,6 +47,7 @@ import {
     estimateInputTokens,
     accumulateCursorUsage,
     resolveCursorUsage,
+    shouldAutoContinueResponse,
 } from './handler.js';
 
 function chatId(): string {
@@ -632,6 +633,7 @@ async function handleOpenAIIncrementalTextStream(
     const proxyHook = { onProxyTrace: (trace: any) => log.recordProxyTrace(trace) };
     let retryCount = 0;
     const thinkingEnabled = anthropicReq.thinking?.type === 'enabled';
+    const plainTextAutoContinue = getConfig().plainTextAutoContinue;
     let finalRawResponse = '';
     let finalVisibleText = '';
     let finalReasoningContent = '';
@@ -750,6 +752,21 @@ async function handleOpenAIIncrementalTextStream(
             : sanitizeResponse(refusalText);
     } else {
         finalTextToSend = streamer.finish();
+        const { fullText: continuedText, continueCount } = await autoContinueCursorResponseStream(
+            activeCursorReq,
+            finalVisibleText,
+            (text) => shouldAutoContinueResponse(text, false, plainTextAutoContinue),
+            (event) => {
+                finalCursorUsage = accumulateCursorUsage(finalCursorUsage, event);
+            },
+        );
+        if (continueCount > 0) {
+            const appendedRaw = continuedText.slice(finalVisibleText.length);
+            log.warn('OpenAI', 'continuation', `纯文本响应检测到半句截断，隐式续写 ${continueCount} 次`);
+            log.updateSummary({ continuationCount: continueCount });
+            finalVisibleText = continuedText;
+            finalTextToSend += sanitizeResponse(appendedRaw);
+        }
     }
 
     if (!usedFallback && thinkingEnabled && finalReasoningContent && !reasoningSent) {
@@ -815,6 +832,7 @@ async function handleOpenAIStream(
     const created = Math.floor(Date.now() / 1000);
     const model = body.model;
     const hasTools = (body.tools?.length ?? 0) > 0;
+    const plainTextAutoContinue = getConfig().plainTextAutoContinue;
 
     // 发送 role delta
     writeOpenAISSE(res, {
@@ -1009,9 +1027,18 @@ async function handleOpenAIStream(
         }
 
         if (hasTools) {
-            fullResponse = await autoContinueCursorToolResponseStream(activeCursorReq, fullResponse, hasTools, (event) => {
-                cursorUsage = accumulateCursorUsage(cursorUsage, event);
-            });
+            const continuation = await autoContinueCursorResponseStream(
+                activeCursorReq,
+                fullResponse,
+                (text) => shouldAutoContinueResponse(text, hasTools, plainTextAutoContinue),
+                (event) => {
+                    cursorUsage = accumulateCursorUsage(cursorUsage, event);
+                },
+            );
+            fullResponse = continuation.fullText;
+            if (continuation.continueCount > 0) {
+                log.updateSummary({ continuationCount: continuation.continueCount });
+            }
         }
 
         let finishReason: 'stop' | 'tool_calls' = 'stop';
@@ -1187,6 +1214,7 @@ async function handleOpenAINonStream(
 ): Promise<void> {
     let activeCursorReq = cursorReq;
     const proxyHook = { onProxyTrace: (trace: any) => log.recordProxyTrace(trace) };
+    const plainTextAutoContinue = getConfig().plainTextAutoContinue;
     let cursorUsage: CursorTokenUsage | undefined;
     let fullText = await sendCursorRequestFull(activeCursorReq, undefined, proxyHook, (event) => {
         cursorUsage = accumulateCursorUsage(cursorUsage, event);
@@ -1246,9 +1274,31 @@ async function handleOpenAINonStream(
     }
 
     if (hasTools) {
-        fullText = await autoContinueCursorToolResponseFull(activeCursorReq, fullText, hasTools, (event) => {
-            cursorUsage = accumulateCursorUsage(cursorUsage, event);
-        });
+        const continuation = await autoContinueCursorResponseFull(
+            activeCursorReq,
+            fullText,
+            (text) => shouldAutoContinueResponse(text, hasTools, plainTextAutoContinue),
+            (event) => {
+                cursorUsage = accumulateCursorUsage(cursorUsage, event);
+            },
+        );
+        fullText = continuation.fullText;
+        if (continuation.continueCount > 0) {
+            log.updateSummary({ continuationCount: continuation.continueCount });
+        }
+    } else if (plainTextAutoContinue) {
+        const continuation = await autoContinueCursorResponseFull(
+            activeCursorReq,
+            fullText,
+            (text) => shouldAutoContinueResponse(text, false, plainTextAutoContinue),
+            (event) => {
+                cursorUsage = accumulateCursorUsage(cursorUsage, event);
+            },
+        );
+        fullText = continuation.fullText;
+        if (continuation.continueCount > 0) {
+            log.updateSummary({ continuationCount: continuation.continueCount });
+        }
     }
 
     if (!usedSyntheticFallback) {
@@ -1618,6 +1668,7 @@ async function handleResponsesStream(
     const respId = responsesId();
     const model = (body.model as string) || 'gpt-4';
     const hasTools = (anthropicReq.tools?.length ?? 0) > 0;
+    const plainTextAutoContinue = getConfig().plainTextAutoContinue;
     let toolCallsDetected = 0;
 
     // 缓冲完整响应再处理（复用 Chat Completions 的逻辑）
@@ -1681,9 +1732,31 @@ async function handleResponsesStream(
         }
 
         if (hasTools) {
-            fullResponse = await autoContinueCursorToolResponseStream(activeCursorReq, fullResponse, hasTools, (event) => {
-                cursorUsage = accumulateCursorUsage(cursorUsage, event);
-            });
+            const continuation = await autoContinueCursorResponseStream(
+                activeCursorReq,
+                fullResponse,
+                (text) => shouldAutoContinueResponse(text, hasTools, plainTextAutoContinue),
+                (event) => {
+                    cursorUsage = accumulateCursorUsage(cursorUsage, event);
+                },
+            );
+            fullResponse = continuation.fullText;
+            if (continuation.continueCount > 0) {
+                log.updateSummary({ continuationCount: continuation.continueCount });
+            }
+        } else if (plainTextAutoContinue) {
+            const continuation = await autoContinueCursorResponseStream(
+                activeCursorReq,
+                fullResponse,
+                (text) => shouldAutoContinueResponse(text, false, plainTextAutoContinue),
+                (event) => {
+                    cursorUsage = accumulateCursorUsage(cursorUsage, event);
+                },
+            );
+            fullResponse = continuation.fullText;
+            if (continuation.continueCount > 0) {
+                log.updateSummary({ continuationCount: continuation.continueCount });
+            }
         }
 
         // 清洗响应
@@ -1867,6 +1940,7 @@ async function handleResponsesNonStream(
 ): Promise<void> {
     let activeCursorReq = cursorReq;
     const proxyHook = { onProxyTrace: (trace: any) => log.recordProxyTrace(trace) };
+    const plainTextAutoContinue = getConfig().plainTextAutoContinue;
     let cursorUsage: CursorTokenUsage | undefined;
     let fullText = await sendCursorRequestFull(activeCursorReq, undefined, proxyHook, (event) => {
         cursorUsage = accumulateCursorUsage(cursorUsage, event);
@@ -1907,9 +1981,31 @@ async function handleResponsesNonStream(
     }
 
     if (hasTools) {
-        fullText = await autoContinueCursorToolResponseFull(activeCursorReq, fullText, hasTools, (event) => {
-            cursorUsage = accumulateCursorUsage(cursorUsage, event);
-        });
+        const continuation = await autoContinueCursorResponseFull(
+            activeCursorReq,
+            fullText,
+            (text) => shouldAutoContinueResponse(text, hasTools, plainTextAutoContinue),
+            (event) => {
+                cursorUsage = accumulateCursorUsage(cursorUsage, event);
+            },
+        );
+        fullText = continuation.fullText;
+        if (continuation.continueCount > 0) {
+            log.updateSummary({ continuationCount: continuation.continueCount });
+        }
+    } else if (plainTextAutoContinue) {
+        const continuation = await autoContinueCursorResponseFull(
+            activeCursorReq,
+            fullText,
+            (text) => shouldAutoContinueResponse(text, false, plainTextAutoContinue),
+            (event) => {
+                cursorUsage = accumulateCursorUsage(cursorUsage, event);
+            },
+        );
+        fullText = continuation.fullText;
+        if (continuation.continueCount > 0) {
+            log.updateSummary({ continuationCount: continuation.continueCount });
+        }
     }
 
     if (!usedSyntheticFallback) {

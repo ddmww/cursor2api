@@ -484,7 +484,7 @@ export function isTruncated(text: string): boolean {
     const closeTags = (trimmed.match(/^<\/[a-zA-Z]/gm) || []).length;
     if (openTags > closeTags + 1) return true;
     // 以逗号、分号、冒号、开括号结尾（明显未完成）
-    if (/[,:\[{(]\s*$/.test(trimmed)) return true;
+    if (INCOMPLETE_TAIL_SYMBOL_RE.test(trimmed)) return true;
     // 长响应以反斜杠 + n 结尾（JSON 字符串中间被截断）
     if (trimmed.length > 2000 && /\\n?\s*$/.test(trimmed) && !trimmed.endsWith('```')) return true;
     // 短响应且以小写字母结尾（句子被截断的强烈信号）
@@ -509,6 +509,12 @@ const LARGE_PAYLOAD_ARG_FIELDS = new Set([
     'file_text',
     'code',
 ]);
+
+const INCOMPLETE_TAIL_SYMBOL_RE = /(?:[,:\[{(]|[，：［【（｛])\s*$/u;
+const PLAIN_TEXT_TERMINATOR_RE = /(?:\.{3}|[.!?;。！？；…])(?:["'”’)\]）】}」』》]+)?$/u;
+const PLAIN_TEXT_TRAILING_CLOSERS_RE = /["'”’)\]）】}」』》]+$/u;
+const PLAIN_TEXT_FINAL_CHAR_RE = /[\p{L}\p{N}_%/\\-]$/u;
+const PLAIN_TEXT_MIN_CONTINUE_CHARS = 120;
 
 function toolCallNeedsMoreContinuation(toolCall: ParsedToolCall): boolean {
     if (LARGE_PAYLOAD_TOOL_NAMES.has(toolCall.name.toLowerCase())) {
@@ -549,7 +555,7 @@ function payloadLooksSemanticallyIncomplete(payload: string): boolean {
     if (lastNonEmptyLine === '|') return true;
     if (lastNonEmptyLine.startsWith('|') && (lastNonEmptyLine.match(/\|/g) || []).length < 3) return true;
     if (/^(?:[-*+]\s*|\d+\.\s*)$/.test(lastNonEmptyLine)) return true;
-    if (/[,:\[{(]\s*$/.test(trimmed)) return true;
+    if (INCOMPLETE_TAIL_SYMBOL_RE.test(trimmed)) return true;
     if (/^[\p{L}\p{N}_./`-]{1,16}$/u.test(lastNonEmptyLine) && !/[.!?;'"`)\]}>]$/.test(lastNonEmptyLine)) {
         return true;
     }
@@ -561,6 +567,52 @@ function toolCallLooksSemanticallyIncomplete(toolCall: ParsedToolCall): boolean 
     if (!LARGE_PAYLOAD_TOOL_NAMES.has(toolCall.name.toLowerCase())) return false;
     const payload = getLargePayloadText(toolCall);
     return payload ? payloadLooksSemanticallyIncomplete(payload) : false;
+}
+
+function getLastNonEmptyLine(text: string): string {
+    return text.split('\n').reverse().find(line => line.trim().length > 0)?.trim() || '';
+}
+
+function endsWithClosedCodeFence(text: string): boolean {
+    return /```(?:\s*)$/u.test(text);
+}
+
+function endsWithClosingTag(text: string): boolean {
+    return /<\/[\p{L}\p{N}_:-]+>\s*$/u.test(text);
+}
+
+function endsWithOpeningTag(text: string): boolean {
+    return /<[\p{L}\p{N}_:-]+(?:\s+[^<>]*)?>\s*$/u.test(text)
+        && !/<\/[\p{L}\p{N}_:-]+>\s*$/u.test(text)
+        && !/\/>\s*$/u.test(text);
+}
+
+function endsWithPartialTag(text: string): boolean {
+    return /<[\p{L}\p{N}_:-]+(?:\s+[^<>]*)?\s*$/u.test(text)
+        && !/>[\s]*$/u.test(text);
+}
+
+function stripTrailingClosers(text: string): string {
+    return text.replace(PLAIN_TEXT_TRAILING_CLOSERS_RE, '');
+}
+
+export function shouldAutoContinuePlainTextResponse(text: string): boolean {
+    const trimmed = text.trimEnd();
+    if (!trimmed) return false;
+    if (trimmed.length < PLAIN_TEXT_MIN_CONTINUE_CHARS) return false;
+    if (hasToolCalls(trimmed)) return false;
+
+    const lastNonEmptyLine = getLastNonEmptyLine(trimmed);
+    if (!lastNonEmptyLine) return false;
+    if (endsWithClosedCodeFence(trimmed) || endsWithClosingTag(trimmed)) return false;
+    if (endsWithOpeningTag(trimmed) || endsWithPartialTag(trimmed)) return true;
+    if (PLAIN_TEXT_TERMINATOR_RE.test(lastNonEmptyLine)) return false;
+    if (isTruncated(trimmed)) return true;
+
+    const contentTail = stripTrailingClosers(lastNonEmptyLine).trimEnd();
+    if (!contentTail) return false;
+
+    return PLAIN_TEXT_FINAL_CHAR_RE.test(contentTail);
 }
 
 /**
@@ -589,6 +641,15 @@ export function shouldAutoContinueTruncatedToolResponse(text: string, hasTools: 
     if (toolCalls.length === 0) return true;
 
     return toolCalls.some(toolCallNeedsMoreContinuation) || toolCalls.some(toolCallLooksSemanticallyIncomplete);
+}
+
+export function shouldAutoContinueResponse(text: string, hasTools: boolean, plainTextEnabled: boolean): boolean {
+    if (hasTools && shouldAutoContinueTruncatedToolResponse(text, hasTools)) {
+        return true;
+    }
+    if (!plainTextEnabled) return false;
+    if (hasToolCalls(text)) return false;
+    return shouldAutoContinuePlainTextResponse(text);
 }
 
 // ==================== 续写去重 ====================
@@ -664,24 +725,10 @@ export function deduplicateContinuation(existing: string, continuation: string):
     return continuation;
 }
 
-export async function autoContinueCursorToolResponseStream(
-    cursorReq: CursorChatRequest,
-    initialResponse: string,
-    hasTools: boolean,
-    onEvent?: (event: CursorSSEEvent) => void,
-): Promise<string> {
-    let fullResponse = initialResponse;
-    const MAX_AUTO_CONTINUE = Math.max(1, getConfig().maxAutoContinue);
-    let continueCount = 0;
-    let consecutiveSmallAdds = 0;
-
-
-    while (MAX_AUTO_CONTINUE > 0 && shouldAutoContinueTruncatedToolResponse(fullResponse, hasTools) && continueCount < MAX_AUTO_CONTINUE) {
-        continueCount++;
-
-        const anchorLength = Math.min(300, fullResponse.length);
-        const anchorText = fullResponse.slice(-anchorLength);
-        const continuationPrompt = `Your previous response was cut off mid-output. The last part of your output was:
+function buildContinuationRequest(cursorReq: CursorChatRequest, currentText: string): CursorChatRequest {
+    const anchorLength = Math.min(300, currentText.length);
+    const anchorText = currentText.slice(-anchorLength);
+    const continuationPrompt = `Your previous response was cut off mid-output. The last part of your output was:
 
 \`\`\`
 ...${anchorText}
@@ -689,28 +736,38 @@ export async function autoContinueCursorToolResponseStream(
 
 Continue EXACTLY from where you stopped. DO NOT repeat any content already generated. DO NOT restart the response. Output ONLY the remaining content, starting immediately from the cut-off point.`;
 
-        const assistantContext = fullResponse.length > 2000
-            ? '...\n' + fullResponse.slice(-2000)
-            : fullResponse;
+    return {
+        ...cursorReq,
+        messages: [
+            ...cursorReq.messages,
+            {
+                parts: [{ type: 'text', text: currentText }],
+                id: uuidv4(),
+                role: 'assistant',
+            },
+            {
+                parts: [{ type: 'text', text: continuationPrompt }],
+                id: uuidv4(),
+                role: 'user',
+            },
+        ],
+    };
+}
 
-        const continuationReq: CursorChatRequest = {
-            ...cursorReq,
-            messages: [
-                // ★ 续写优化：丢弃所有工具定义和历史消息，只保留续写上下文
-                // 模型已经知道在写什么（从 assistantContext 可以推断），不需要工具 Schema
-                // 这样大幅减少输入体积，给输出留更多空间，续写更快
-                {
-                    parts: [{ type: 'text', text: assistantContext }],
-                    id: uuidv4(),
-                    role: 'assistant',
-                },
-                {
-                    parts: [{ type: 'text', text: continuationPrompt }],
-                    id: uuidv4(),
-                    role: 'user',
-                },
-            ],
-        };
+export async function autoContinueCursorResponseStream(
+    cursorReq: CursorChatRequest,
+    initialResponse: string,
+    shouldContinue: (text: string) => boolean,
+    onEvent?: (event: CursorSSEEvent) => void,
+): Promise<{ fullText: string; continueCount: number }> {
+    let fullResponse = initialResponse;
+    const MAX_AUTO_CONTINUE = Math.max(0, getConfig().maxAutoContinue);
+    let continueCount = 0;
+    let consecutiveSmallAdds = 0;
+
+    while (MAX_AUTO_CONTINUE > 0 && shouldContinue(fullResponse) && continueCount < MAX_AUTO_CONTINUE) {
+        continueCount++;
+        const continuationReq = buildContinuationRequest(cursorReq, fullResponse);
 
         let continuationResponse = '';
         await sendCursorRequest(continuationReq, (event: CursorSSEEvent) => {
@@ -736,54 +793,23 @@ Continue EXACTLY from where you stopped. DO NOT repeat any content already gener
         }
     }
 
-    return fullResponse;
+    return { fullText: fullResponse, continueCount };
 }
 
-export async function autoContinueCursorToolResponseFull(
+export async function autoContinueCursorResponseFull(
     cursorReq: CursorChatRequest,
     initialText: string,
-    hasTools: boolean,
+    shouldContinue: (text: string) => boolean,
     onEvent?: (event: CursorSSEEvent) => void,
-): Promise<string> {
+): Promise<{ fullText: string; continueCount: number }> {
     let fullText = initialText;
-    const MAX_AUTO_CONTINUE = Math.max(1, getConfig().maxAutoContinue);
+    const MAX_AUTO_CONTINUE = Math.max(0, getConfig().maxAutoContinue);
     let continueCount = 0;
     let consecutiveSmallAdds = 0;
 
-    while (MAX_AUTO_CONTINUE > 0 && shouldAutoContinueTruncatedToolResponse(fullText, hasTools) && continueCount < MAX_AUTO_CONTINUE) {
+    while (MAX_AUTO_CONTINUE > 0 && shouldContinue(fullText) && continueCount < MAX_AUTO_CONTINUE) {
         continueCount++;
-
-        const anchorLength = Math.min(300, fullText.length);
-        const anchorText = fullText.slice(-anchorLength);
-        const continuationPrompt = `Your previous response was cut off mid-output. The last part of your output was:
-
-\`\`\`
-...${anchorText}
-\`\`\`
-
-Continue EXACTLY from where you stopped. DO NOT repeat any content already generated. DO NOT restart the response. Output ONLY the remaining content, starting immediately from the cut-off point.`;
-
-        const assistantContext = fullText.length > 2000
-            ? '...\n' + fullText.slice(-2000)
-            : fullText;
-
-        const continuationReq: CursorChatRequest = {
-            ...cursorReq,
-            messages: [
-                // ★ 续写优化：丢弃所有工具定义和历史消息
-                {
-                    parts: [{ type: 'text', text: assistantContext }],
-                    id: uuidv4(),
-                    role: 'assistant',
-                },
-                {
-                    parts: [{ type: 'text', text: continuationPrompt }],
-                    id: uuidv4(),
-                    role: 'user',
-                },
-            ],
-        };
-
+        const continuationReq = buildContinuationRequest(cursorReq, fullText);
         const continuationResponse = await sendCursorRequestFull(continuationReq, undefined, undefined, onEvent);
         if (continuationResponse.trim().length === 0) break;
 
@@ -801,7 +827,37 @@ Continue EXACTLY from where you stopped. DO NOT repeat any content already gener
         }
     }
 
-    return fullText;
+    return { fullText, continueCount };
+}
+
+export async function autoContinueCursorToolResponseStream(
+    cursorReq: CursorChatRequest,
+    initialResponse: string,
+    hasTools: boolean,
+    onEvent?: (event: CursorSSEEvent) => void,
+): Promise<string> {
+    const result = await autoContinueCursorResponseStream(
+        cursorReq,
+        initialResponse,
+        (text) => shouldAutoContinueTruncatedToolResponse(text, hasTools),
+        onEvent,
+    );
+    return result.fullText;
+}
+
+export async function autoContinueCursorToolResponseFull(
+    cursorReq: CursorChatRequest,
+    initialText: string,
+    hasTools: boolean,
+    onEvent?: (event: CursorSSEEvent) => void,
+): Promise<string> {
+    const result = await autoContinueCursorResponseFull(
+        cursorReq,
+        initialText,
+        (text) => shouldAutoContinueTruncatedToolResponse(text, hasTools),
+        onEvent,
+    );
+    return result.fullText;
 }
 
 // ==================== 重试辅助 ====================
@@ -933,6 +989,7 @@ async function handleDirectTextStream(
     let activeCursorReq = cursorReq;
     const proxyHook = { onProxyTrace: (trace: any) => log.recordProxyTrace(trace) };
     let retryCount = 0;
+    const plainTextAutoContinue = getConfig().plainTextAutoContinue;
     let finalRawResponse = '';
     let finalVisibleText = '';
     let finalThinkingContent = '';
@@ -1121,6 +1178,21 @@ async function handleDirectTextStream(
         }
     } else {
         finalTextToSend = streamer.finish();
+        const { fullText: continuedText, continueCount } = await autoContinueCursorResponseStream(
+            activeCursorReq,
+            finalVisibleText,
+            (text) => shouldAutoContinueResponse(text, false, plainTextAutoContinue),
+            (event) => {
+                finalCursorUsage = accumulateCursorUsage(finalCursorUsage, event);
+            },
+        );
+        if (continueCount > 0) {
+            const appendedRaw = continuedText.slice(finalVisibleText.length);
+            log.warn('Handler', 'continuation', `纯文本响应检测到半句截断，隐式续写 ${continueCount} 次`);
+            log.updateSummary({ continuationCount: continueCount });
+            finalVisibleText = continuedText;
+            finalTextToSend += sanitizeResponse(appendedRaw);
+        }
     }
 
     if (!usedFallback && clientRequestedThinking && finalThinkingContent && !streamState.thinkingEmitted) {
@@ -1175,6 +1247,7 @@ async function handleStream(res: Response, cursorReq: CursorChatRequest, body: A
     const id = msgId();
     const model = body.model;
     const hasTools = (body.tools?.length ?? 0) > 0;
+    const plainTextAutoContinue = getConfig().plainTextAutoContinue;
 
     // 发送 message_start
     writeSSE(res, 'message_start', {
@@ -1474,49 +1547,16 @@ async function handleStream(res: Response, cursorReq: CursorChatRequest, body: A
         let consecutiveSmallAdds = 0; // 连续小增量计数
 
         
-        while (MAX_AUTO_CONTINUE > 0 && shouldAutoContinueTruncatedToolResponse(fullResponse, hasTools) && continueCount < MAX_AUTO_CONTINUE) {
+        while (MAX_AUTO_CONTINUE > 0 && shouldAutoContinueResponse(fullResponse, hasTools, plainTextAutoContinue) && continueCount < MAX_AUTO_CONTINUE) {
             continueCount++;
             const prevLength = fullResponse.length;
             log.warn('Handler', 'continuation', `内部检测到截断 (${fullResponse.length} chars)，隐式续写 (第${continueCount}次)`);
             log.updateSummary({ continuationCount: continueCount });
             
-            // 提取截断点的最后一段文本作为上下文锚点
-            const anchorLength = Math.min(300, fullResponse.length);
-            const anchorText = fullResponse.slice(-anchorLength);
-            
-            // 构造续写请求：原始消息 + 截断的 assistant 回复(仅末尾) + user 续写引导
-            // ★ 只发最后 2000 字符作为 assistant 上下文，大幅减小请求体
-            const continuationPrompt = `Your previous response was cut off mid-output. The last part of your output was:
+            const continuationReq = buildContinuationRequest(activeCursorReq, fullResponse);
 
-\`\`\`
-...${anchorText}
-\`\`\`
-
-Continue EXACTLY from where you stopped. DO NOT repeat any content already generated. DO NOT restart the response. Output ONLY the remaining content, starting immediately from the cut-off point.`;
-
-            const assistantContext = fullResponse.length > 2000
-                ? '...\n' + fullResponse.slice(-2000)
-                : fullResponse;
-
-            activeCursorReq = {
-                ...activeCursorReq,
-                messages: [
-                    // ★ 续写优化：丢弃所有工具定义和历史消息
-                    {
-                        parts: [{ type: 'text', text: assistantContext }],
-                        id: uuidv4(),
-                        role: 'assistant',
-                    },
-                    {
-                        parts: [{ type: 'text', text: continuationPrompt }],
-                        id: uuidv4(),
-                        role: 'user',
-                    },
-                ],
-            };
-            
             let continuationResponse = '';
-            await sendCursorRequest(activeCursorReq, (event: CursorSSEEvent) => {
+            await sendCursorRequest(continuationReq, (event: CursorSSEEvent) => {
                 cursorUsage = accumulateCursorUsage(cursorUsage, event);
                 if (event.type === 'text-delta' && event.delta) {
                     continuationResponse += event.delta;
@@ -1862,6 +1902,7 @@ async function handleNonStream(res: Response, cursorReq: CursorChatRequest, body
     let retryCount = 0;
     let upstreamTextForBlockCheck = fullText;
     let usedSyntheticFallback = false;
+    const plainTextAutoContinue = getConfig().plainTextAutoContinue;
 
     log.info('Handler', 'response', `非流式原始响应: ${fullText.length} chars`, {
         preview: fullText.substring(0, 300),
@@ -1946,39 +1987,13 @@ async function handleNonStream(res: Response, cursorReq: CursorChatRequest, body
     let continueCount = 0;
     let consecutiveSmallAdds = 0; // 连续小增量计数
 
-    while (MAX_AUTO_CONTINUE > 0 && shouldAutoContinueTruncatedToolResponse(fullText, hasTools) && continueCount < MAX_AUTO_CONTINUE) {
+    while (MAX_AUTO_CONTINUE > 0 && shouldAutoContinueResponse(fullText, hasTools, plainTextAutoContinue) && continueCount < MAX_AUTO_CONTINUE) {
         continueCount++;
         const prevLength = fullText.length;
         log.warn('Handler', 'continuation', `非流式检测到截断 (${fullText.length} chars)，隐式续写 (第${continueCount}次)`);
         log.updateSummary({ continuationCount: continueCount });
 
-        const anchorLength = Math.min(300, fullText.length);
-        const anchorText = fullText.slice(-anchorLength);
-
-        const continuationPrompt = `Your previous response was cut off mid-output. The last part of your output was:
-
-\`\`\`
-...${anchorText}
-\`\`\`
-
-Continue EXACTLY from where you stopped. DO NOT repeat any content already generated. DO NOT restart the response. Output ONLY the remaining content, starting immediately from the cut-off point.`;
-
-        const continuationReq: CursorChatRequest = {
-            ...activeCursorReq,
-            messages: [
-                // ★ 续写优化：丢弃所有工具定义和历史消息
-                {
-                    parts: [{ type: 'text', text: fullText.length > 2000 ? '...\n' + fullText.slice(-2000) : fullText }],
-                    id: uuidv4(),
-                    role: 'assistant',
-                },
-                {
-                    parts: [{ type: 'text', text: continuationPrompt }],
-                    id: uuidv4(),
-                    role: 'user',
-                },
-            ],
-        };
+        const continuationReq = buildContinuationRequest(activeCursorReq, fullText);
 
         const continuationResponse = await sendCursorRequestFull(continuationReq, undefined, proxyHook, (event) => {
             cursorUsage = accumulateCursorUsage(cursorUsage, event);

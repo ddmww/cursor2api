@@ -81,6 +81,9 @@ function parseYamlConfig(defaults: AppConfig): { config: AppConfig; raw: Record<
         }
         if (yaml.cursor_model) result.cursorModel = yaml.cursor_model;
         if (typeof yaml.max_auto_continue === 'number') result.maxAutoContinue = yaml.max_auto_continue;
+        if (yaml.plain_text_auto_continue !== undefined) {
+            result.plainTextAutoContinue = yaml.plain_text_auto_continue === true;
+        }
         if (typeof yaml.max_history_messages === 'number') result.maxHistoryMessages = yaml.max_history_messages;
         if (yaml.fingerprint) {
             if (yaml.fingerprint.user_agent) result.fingerprint.userAgent = yaml.fingerprint.user_agent;
@@ -194,6 +197,11 @@ function applyEnvOverrides(cfg: AppConfig): void {
     }
     if (process.env.CURSOR_MODEL) cfg.cursorModel = process.env.CURSOR_MODEL;
     if (process.env.MAX_AUTO_CONTINUE !== undefined) cfg.maxAutoContinue = parseInt(process.env.MAX_AUTO_CONTINUE);
+    if (process.env.PLAIN_TEXT_AUTO_CONTINUE !== undefined) {
+        cfg.plainTextAutoContinue =
+            process.env.PLAIN_TEXT_AUTO_CONTINUE === 'true' ||
+            process.env.PLAIN_TEXT_AUTO_CONTINUE === '1';
+    }
     if (process.env.MAX_HISTORY_MESSAGES !== undefined) cfg.maxHistoryMessages = parseInt(process.env.MAX_HISTORY_MESSAGES);
     if (process.env.AUTH_TOKEN) {
         cfg.authTokens = process.env.AUTH_TOKEN.split(',').map(s => s.trim()).filter(Boolean);
@@ -285,6 +293,7 @@ function defaultConfig(): AppConfig {
         },
         cursorModel: 'anthropic/claude-sonnet-4.6',
         maxAutoContinue: 0,
+        plainTextAutoContinue: false,
         maxHistoryMessages: -1,
         sanitizeEnabled: false,  // 默认关闭响应内容清洗
         fixedFallbackResponsesEnabled: true,
@@ -307,6 +316,9 @@ function detectChanges(oldCfg: AppConfig, newCfg: AppConfig): string[] {
     if (JSON.stringify(oldCfg.upstreamBlocker) !== JSON.stringify(newCfg.upstreamBlocker)) changes.push('upstream_blocker: (changed)');
     if (oldCfg.cursorModel !== newCfg.cursorModel) changes.push(`cursor_model: ${oldCfg.cursorModel} → ${newCfg.cursorModel}`);
     if (oldCfg.maxAutoContinue !== newCfg.maxAutoContinue) changes.push(`max_auto_continue: ${oldCfg.maxAutoContinue} → ${newCfg.maxAutoContinue}`);
+    if (oldCfg.plainTextAutoContinue !== newCfg.plainTextAutoContinue) {
+        changes.push(`plain_text_auto_continue: ${oldCfg.plainTextAutoContinue} → ${newCfg.plainTextAutoContinue}`);
+    }
     if (oldCfg.maxHistoryMessages !== newCfg.maxHistoryMessages) changes.push(`max_history_messages: ${oldCfg.maxHistoryMessages} → ${newCfg.maxHistoryMessages}`);
 
     // auth_tokens

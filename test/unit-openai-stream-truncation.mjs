@@ -1,5 +1,6 @@
 import { autoContinueCursorToolResponseStream } from '../dist/handler.js';
 import { parseToolCalls } from '../dist/converter.js';
+import { reloadConfigFromDisk } from '../dist/config.js';
 
 let passed = 0;
 let failed = 0;
@@ -65,6 +66,10 @@ function createSseResponse(deltas) {
 
 console.log('\n📦 OpenAI 流式截断回归\n');
 
+const originalMaxAutoContinue = process.env.MAX_AUTO_CONTINUE;
+process.env.MAX_AUTO_CONTINUE = '1';
+reloadConfigFromDisk();
+
 await (async () => {
     const originalFetch = global.fetch;
     const fetchCalls = [];
@@ -99,6 +104,9 @@ await (async () => {
         assertEqual(fetchCalls.length, 1, '长 Write 截断应触发一次续写请求');
         assertEqual(parsed.toolCalls.length, 1, '续写后应恢复出一个工具调用');
         assertEqual(parsed.toolCalls[0].name, 'Write');
+        assertEqual(fetchCalls[0].body.messages.length, 3, '续写请求应保留原始消息并追加 assistant/user 两条消息');
+        assertEqual(fetchCalls[0].body.messages[0].parts[0].text, 'Write a long file.', '续写请求应保留原始用户消息');
+        assertEqual(fetchCalls[0].body.messages[1].parts[0].text, initialResponse, '续写请求应附带完整截断响应，而不是只发尾部片段');
         assert(typeof fetchCalls[0].body?.messages?.at(-1)?.parts?.[0]?.text === 'string', '续写请求应包含 user 引导消息');
         assert(fetchCalls[0].body.messages.at(-1).parts[0].text.includes('Continue EXACTLY from where you stopped'), '续写提示词应正确注入');
 
@@ -166,5 +174,12 @@ await (async () => {
 })();
 
 console.log(`\n结果: ${passed} 通过 / ${failed} 失败 / ${passed + failed} 总计\n`);
+
+if (originalMaxAutoContinue === undefined) {
+    delete process.env.MAX_AUTO_CONTINUE;
+} else {
+    process.env.MAX_AUTO_CONTINUE = originalMaxAutoContinue;
+}
+reloadConfigFromDisk();
 
 if (failed > 0) process.exit(1);
