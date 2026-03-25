@@ -18,12 +18,14 @@ function assert(condition, msg) {
 }
 
 const DEFAULT_UPSTREAM_BLOCK_MESSAGE = '上游渠道商拦截了当前请求，请尝试换个说法后重试，或稍后再试。';
+const EMPTY_UPSTREAM_RESPONSE_MATCH = '__empty_upstream_response__';
+const UPSTREAM_BLOCKED_HTTP_STATUS = 500;
 
 class UpstreamBlockedError extends Error {
     constructor(matchedKeyword, message) {
         super(message || DEFAULT_UPSTREAM_BLOCK_MESSAGE);
         this.name = 'UpstreamBlockedError';
-        this.status = 502;
+        this.status = UPSTREAM_BLOCKED_HTTP_STATUS;
         this.type = 'upstream_blocked';
         this.code = 'upstream_blocked';
         this.matchedKeyword = matchedKeyword;
@@ -33,6 +35,7 @@ class UpstreamBlockedError extends Error {
 let mockConfig = {
     upstreamBlocker: {
         enabled: false,
+        blockEmptyResponse: false,
         keywords: [],
         message: DEFAULT_UPSTREAM_BLOCK_MESSAGE,
     },
@@ -56,6 +59,13 @@ function findUpstreamBlockedKeyword(text) {
 }
 
 function assertUpstreamResponseAllowed(text) {
+    if (mockConfig.upstreamBlocker.blockEmptyResponse && String(text ?? '').trim().length === 0) {
+        throw new UpstreamBlockedError(
+            EMPTY_UPSTREAM_RESPONSE_MATCH,
+            mockConfig.upstreamBlocker.message?.trim() || DEFAULT_UPSTREAM_BLOCK_MESSAGE,
+        );
+    }
+
     const matchedKeyword = findUpstreamBlockedKeyword(text);
     if (!matchedKeyword) return;
     throw new UpstreamBlockedError(
@@ -69,6 +79,7 @@ console.log('\n📦 [1] upstream_blocker 关键词匹配\n');
 mockConfig = {
     upstreamBlocker: {
         enabled: true,
+        blockEmptyResponse: false,
         caseSensitive: false,
         keywords: ['cursor', 'I cannot fulfill this request.'],
         message: '上游渠道商拦截了当前请求，请换个说法后重试。',
@@ -92,7 +103,7 @@ test('命中时抛出 UpstreamBlockedError', () => {
     } catch (error) {
         blocked = error instanceof UpstreamBlockedError;
         assert(error.message.includes('上游渠道商拦截'), 'Expected configured block message');
-        assert(error.status === 502, 'Expected status=502');
+        assert(error.status === UPSTREAM_BLOCKED_HTTP_STATUS, `Expected status=${UPSTREAM_BLOCKED_HTTP_STATUS}`);
     }
     assert(blocked, 'Expected UpstreamBlockedError to be thrown');
 });
@@ -102,6 +113,7 @@ console.log('\n📦 [2] 开关关闭时不拦截\n');
 mockConfig = {
     upstreamBlocker: {
         enabled: false,
+        blockEmptyResponse: false,
         caseSensitive: false,
         keywords: ['cursor'],
         message: DEFAULT_UPSTREAM_BLOCK_MESSAGE,
@@ -122,6 +134,7 @@ console.log('\n📦 [3] 大小写敏感开关\n');
 mockConfig = {
     upstreamBlocker: {
         enabled: true,
+        blockEmptyResponse: false,
         caseSensitive: true,
         keywords: ['Cursor'],
         message: DEFAULT_UPSTREAM_BLOCK_MESSAGE,
@@ -136,6 +149,45 @@ test('开启大小写敏感后，大小写完全一致才命中', () => {
 test('开启大小写敏感后，大小写不同不命中', () => {
     const matched = findUpstreamBlockedKeyword('cursor support assistant');
     assert(matched === undefined, `Expected no match, got ${matched}`);
+});
+
+console.log('\n📦 [4] 空回复拦截开关\n');
+
+mockConfig = {
+    upstreamBlocker: {
+        enabled: false,
+        blockEmptyResponse: true,
+        caseSensitive: false,
+        keywords: [],
+        message: '上游返回空回复，请稍后再试。',
+    },
+};
+
+test('开启空回复拦截后，空白字符串抛出 UpstreamBlockedError', () => {
+    let blocked = false;
+    try {
+        assertUpstreamResponseAllowed('   \n\t  ');
+    } catch (error) {
+        blocked = error instanceof UpstreamBlockedError;
+        assert(error.matchedKeyword === EMPTY_UPSTREAM_RESPONSE_MATCH, `Unexpected matched keyword: ${error.matchedKeyword}`);
+        assert(error.message === '上游返回空回复，请稍后再试。', `Unexpected message: ${error.message}`);
+        assert(error.status === UPSTREAM_BLOCKED_HTTP_STATUS, `Expected status=${UPSTREAM_BLOCKED_HTTP_STATUS}`);
+    }
+    assert(blocked, 'Expected UpstreamBlockedError to be thrown');
+});
+
+mockConfig = {
+    upstreamBlocker: {
+        enabled: false,
+        blockEmptyResponse: false,
+        caseSensitive: false,
+        keywords: [],
+        message: DEFAULT_UPSTREAM_BLOCK_MESSAGE,
+    },
+};
+
+test('关闭空回复拦截后，空白字符串不抛错', () => {
+    assertUpstreamResponseAllowed('   ');
 });
 
 console.log(`\n✅ 通过 ${passed} 项`);

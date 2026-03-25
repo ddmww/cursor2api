@@ -135,6 +135,7 @@ export interface ProxyPoolStatus {
 
 export interface UpstreamBlockerConfig {
     enabled: boolean;
+    blockEmptyResponse: boolean;
     caseSensitive: boolean;
     keywords: string[];
     message: string;

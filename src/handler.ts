@@ -21,7 +21,7 @@ import { sendCursorRequest, sendCursorRequestFull } from './cursor-client.js';
 import { getConfig } from './config.js';
 import { createRequestLogger, type RequestLogger } from './logger.js';
 import { createIncrementalTextStreamer, hasLeadingThinking, splitLeadingThinkingBlocks, stripThinkingTags } from './streaming-text.js';
-import { assertUpstreamResponseAllowed, UpstreamBlockedError } from './upstream-blocker.js';
+import { assertUpstreamResponseAllowed, shouldDelayUpstreamSuccessStatus, UpstreamBlockedError } from './upstream-blocker.js';
 
 function msgId(): string {
     return 'msg_' + uuidv4().replace(/-/g, '').substring(0, 24);
@@ -1709,7 +1709,7 @@ Please go ahead and pick the most appropriate tool for the current task and outp
 async function handleNonStream(res: Response, cursorReq: CursorChatRequest, body: AnthropicRequest, log: RequestLogger, clientRequestedThinking: boolean = false): Promise<void> {
     // ★ 非流式保活：手动设置 chunked 响应，在缓冲期间每 15s 发送空白字符保活
     // JSON.parse 会忽略前导空白，所以客户端解析不受影响
-    const delaySuccessHeader = getConfig().upstreamBlocker.enabled;
+    const delaySuccessHeader = shouldDelayUpstreamSuccessStatus();
     if (!delaySuccessHeader) {
         res.writeHead(200, { 'Content-Type': 'application/json' });
     }
