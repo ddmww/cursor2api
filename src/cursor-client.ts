@@ -215,9 +215,11 @@ export async function sendCursorRequestFull(
     req: CursorChatRequest,
     externalSignal?: AbortSignal,
     hook?: ProxyTraceHook,
+    onEvent?: (event: CursorSSEEvent) => void,
 ): Promise<string> {
     let fullText = '';
     await sendCursorRequest(req, (event) => {
+        onEvent?.(event);
         if (event.type === 'text-delta' && event.delta) {
             fullText += event.delta;
         }

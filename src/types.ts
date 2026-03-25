@@ -88,9 +88,19 @@ export interface CursorPart {
     text: string;
 }
 
+export interface CursorTokenUsage {
+    inputTokens?: number;
+    outputTokens?: number;
+    totalTokens?: number;
+}
+
 export interface CursorSSEEvent {
     type: string;
     delta?: string;
+    finishReason?: string;
+    messageMetadata?: {
+        usage?: CursorTokenUsage;
+    };
 }
 
 // ==================== Internal Types ====================

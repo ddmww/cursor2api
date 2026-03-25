@@ -44,6 +44,8 @@ export interface RequestSummary {
   stopReason?: string;
   error?: string;
   toolCallsDetected: number;
+  inputTokens?: number;
+  outputTokens?: number;
   ttft?: number;
   cursorApiTime?: number;
   phaseTimings: PhaseTiming[];

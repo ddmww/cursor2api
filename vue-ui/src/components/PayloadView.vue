@@ -48,9 +48,11 @@
           <div class="cg-item"><span class="cg-l">原始工具数</span><span class="cg-v">{{ convSummary.origToolCount }}</span></div>
           <div class="cg-item"><span class="cg-l">Cursor工具数</span><span class="cg-v" style="color:var(--green)">0 <small>(嵌入消息)</small></span></div>
           <div class="cg-item"><span class="cg-l">工具指令占用</span><span class="cg-v">{{ convSummary.toolInstrChars > 0 ? fmtN(convSummary.toolInstrChars) + ' chars' : convSummary.origToolCount > 0 ? '嵌入#1' : 'N/A' }}</span></div>
+          <div class="cg-item"><span class="cg-l">输入Token</span><span class="cg-v">{{ convSummary.inputTokens != null ? fmtN(convSummary.inputTokens) : '—' }}</span></div>
           <div class="cg-item"><span class="cg-l">原始消息数</span><span class="cg-v">{{ convSummary.origMsgCount }}</span></div>
           <div class="cg-item"><span class="cg-l">Cursor消息数</span><span class="cg-v" style="color:var(--green)">{{ convSummary.cursorMsgCount }}</span></div>
           <div class="cg-item"><span class="cg-l">总上下文</span><span class="cg-v">{{ convSummary.totalChars ? fmtN(convSummary.totalChars) + ' chars' : '—' }}</span></div>
+          <div class="cg-item"><span class="cg-l">输出Token</span><span class="cg-v">{{ convSummary.outputTokens != null ? fmtN(convSummary.outputTokens) : '—' }}</span></div>
         </div>
         <div v-if="convSummary.origToolCount > 0" class="tool-warn">
           ⚠️ Cursor API 不支持原生 tools。{{ convSummary.origToolCount }} 个工具已转为文本指令嵌入 user#1{{ convSummary.toolInstrChars > 0 ? '（约 ' + fmtN(convSummary.toolInstrChars) + ' chars）' : '' }}
@@ -219,7 +221,15 @@ const convSummary = computed(() => {
   const toolInstrChars = firstCursor && firstUser
     ? Math.max(0, firstCursor.contentLength - (firstUser.contentLength ?? 0)) : 0;
   const totalChars = (p.cursorRequest as Record<string, unknown>)?.totalChars as number | undefined;
-  return { origMsgCount, cursorMsgCount, origToolCount, toolInstrChars, totalChars };
+  return {
+    origMsgCount,
+    cursorMsgCount,
+    origToolCount,
+    toolInstrChars,
+    totalChars,
+    inputTokens: req.inputTokens,
+    outputTokens: req.outputTokens,
+  };
 });
 
 // 消息列表展开/折叠全部控制（null = 用默认值，true/false = 强制覆盖）
@@ -621,7 +631,7 @@ mark.hl {
 
 /* 转换摘要 */
 .conv-grid {
-  display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-bottom: 8px;
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-bottom: 8px;
 }
 .cg-item {
   display: flex; flex-direction: column; gap: 2px;

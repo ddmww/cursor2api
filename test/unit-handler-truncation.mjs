@@ -71,6 +71,48 @@ test('无工具代码块但文本明显截断时继续续写', () => {
     );
 });
 
+test('闭合的大型 Write 工具如果 payload 语义上没写完仍继续续写', () => {
+    const markdownPayload = `${'| a | b |\n'.repeat(180)}|`;
+    const text = [
+        '```json action',
+        '{',
+        '  "tool": "Write",',
+        '  "parameters": {',
+        '    "file_path": "/tmp/table.md",',
+        `    "content": ${JSON.stringify(markdownPayload)}`,
+        '  }',
+        '}',
+        '```',
+    ].join('\n');
+
+    assertEqual(
+        shouldAutoContinueTruncatedToolResponse(text, true),
+        true,
+        '闭合但语义未完成的大 payload 应继续续写',
+    );
+});
+
+test('闭合的大型 Write 工具如果 payload 结尾完整则不续写', () => {
+    const cleanPayload = `${'This paragraph is already complete and should not trigger continuation.\n'.repeat(80)}Done.`;
+    const text = [
+        '```json action',
+        '{',
+        '  "tool": "Write",',
+        '  "parameters": {',
+        '    "file_path": "/tmp/article.md",',
+        `    "content": ${JSON.stringify(cleanPayload)}`,
+        '  }',
+        '}',
+        '```',
+    ].join('\n');
+
+    assertEqual(
+        shouldAutoContinueTruncatedToolResponse(text, true),
+        false,
+        '语义完整的大 payload 不应被误判为需要续写',
+    );
+});
+
 console.log(`\n结果: ${passed} 通过 / ${failed} 失败 / ${passed + failed} 总计\n`);
 
 if (failed > 0) process.exit(1);

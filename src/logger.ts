@@ -112,6 +112,8 @@ export interface RequestSummary {
     stopReason?: string;
     error?: string;
     toolCallsDetected: number;
+    inputTokens?: number;
+    outputTokens?: number;
     ttft?: number;
     cursorApiTime?: number;
     phaseTimings: PhaseTiming[];
@@ -903,8 +905,11 @@ export class RequestLogger {
         const retryInfo = this.summary.retryCount > 0 ? ` retry=${this.summary.retryCount}` : '';
         const contInfo = this.summary.continuationCount > 0 ? ` cont=${this.summary.continuationCount}` : '';
         const toolInfo = this.summary.toolCallsDetected > 0 ? ` tools_called=${this.summary.toolCallsDetected}` : '';
+        const tokenInfo = this.summary.inputTokens !== undefined || this.summary.outputTokens !== undefined
+            ? ` tokens=${this.summary.inputTokens ?? '-'}->${this.summary.outputTokens ?? '-'}`
+            : '';
         const ttftInfo = this.summary.ttft ? ` ttft=${this.summary.ttft}ms` : '';
-        console.log(`\x1b[32m⟵\x1b[0m [${this.requestId}] ${duration}ms | ${responseChars} chars | stop=${stopReason || 'end_turn'}${ttftInfo}${retryInfo}${contInfo}${toolInfo}`);
+        console.log(`\x1b[32m⟵\x1b[0m [${this.requestId}] ${duration}ms | ${responseChars} chars | stop=${stopReason || 'end_turn'}${ttftInfo}${retryInfo}${contInfo}${toolInfo}${tokenInfo}`);
     }
     
     intercepted(reason: string): void {

@@ -14,6 +14,7 @@ import type {
     CursorChatRequest,
     CursorMessage,
     CursorSSEEvent,
+    CursorTokenUsage,
     ParsedToolCall,
 } from './types.js';
 import { convertToCursorRequest, parseToolCalls, hasToolCalls } from './converter.js';
@@ -122,6 +123,53 @@ export function estimateInputTokens(body: AnthropicRequest): number {
     
     // Safer estimation for mixed Chinese/English and Code: 1 token ≈ 3 chars + 10% safety margin.
     return Math.max(1, Math.ceil((totalChars / 3) * 1.1));
+}
+
+function normalizeTokenCount(value: unknown): number | undefined {
+    return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function sumOptionalTokens(current: number | undefined, next: number | undefined): number | undefined {
+    if (current === undefined && next === undefined) return undefined;
+    return (current ?? 0) + (next ?? 0);
+}
+
+export function extractCursorUsage(event: CursorSSEEvent): CursorTokenUsage | undefined {
+    const usage = event.messageMetadata?.usage;
+    if (!usage) return undefined;
+
+    const inputTokens = normalizeTokenCount(usage.inputTokens);
+    const outputTokens = normalizeTokenCount(usage.outputTokens);
+    const totalTokens = normalizeTokenCount(usage.totalTokens);
+
+    if (inputTokens === undefined && outputTokens === undefined && totalTokens === undefined) {
+        return undefined;
+    }
+
+    return {
+        ...(inputTokens !== undefined ? { inputTokens } : {}),
+        ...(outputTokens !== undefined ? { outputTokens } : {}),
+        ...(totalTokens !== undefined ? { totalTokens } : {}),
+    };
+}
+
+export function accumulateCursorUsage(current: CursorTokenUsage | undefined, event: CursorSSEEvent): CursorTokenUsage | undefined {
+    const next = extractCursorUsage(event);
+    if (!next) return current;
+
+    const fallbackTotal = (next.inputTokens ?? 0) + (next.outputTokens ?? 0);
+    return {
+        inputTokens: sumOptionalTokens(current?.inputTokens, next.inputTokens),
+        outputTokens: sumOptionalTokens(current?.outputTokens, next.outputTokens),
+        totalTokens: sumOptionalTokens(current?.totalTokens, next.totalTokens ?? fallbackTotal),
+    };
+}
+
+export function resolveCursorUsage(body: AnthropicRequest, outputText: string, cursorUsage?: CursorTokenUsage): { inputTokens: number; outputTokens: number } {
+    return {
+        inputTokens: cursorUsage?.inputTokens ?? estimateInputTokens(body),
+        outputTokens: cursorUsage?.outputTokens ?? Math.ceil(outputText.length / 3),
+    };
 }
 
 export function countTokens(req: Request, res: Response): void {
@@ -436,7 +484,7 @@ export function isTruncated(text: string): boolean {
     const closeTags = (trimmed.match(/^<\/[a-zA-Z]/gm) || []).length;
     if (openTags > closeTags + 1) return true;
     // 以逗号、分号、冒号、开括号结尾（明显未完成）
-    if (/[,;:\[{(]\s*$/.test(trimmed)) return true;
+    if (/[,:\[{(]\s*$/.test(trimmed)) return true;
     // 长响应以反斜杠 + n 结尾（JSON 字符串中间被截断）
     if (trimmed.length > 2000 && /\\n?\s*$/.test(trimmed) && !trimmed.endsWith('```')) return true;
     // 短响应且以小写字母结尾（句子被截断的强烈信号）
@@ -476,6 +524,45 @@ function toolCallNeedsMoreContinuation(toolCall: ParsedToolCall): boolean {
     return false;
 }
 
+function getLargePayloadText(toolCall: ParsedToolCall): string {
+    let longest = '';
+    for (const [key, value] of Object.entries(toolCall.arguments || {})) {
+        if (typeof value !== 'string') continue;
+        if (LARGE_PAYLOAD_ARG_FIELDS.has(key) || value.length >= 1500) {
+            if (value.length > longest.length) longest = value;
+        }
+    }
+    return longest;
+}
+
+function payloadLooksSemanticallyIncomplete(payload: string): boolean {
+    const trimmed = payload.trimEnd();
+    if (trimmed.length < 1200) return false;
+
+    const lineStartCodeBlocks = (trimmed.match(/^```/gm) || []).length;
+    if (lineStartCodeBlocks % 2 !== 0) return true;
+
+    const lines = trimmed.split('\n');
+    const lastNonEmptyLine = [...lines].reverse().find(line => line.trim().length > 0)?.trim();
+    if (!lastNonEmptyLine) return false;
+
+    if (lastNonEmptyLine === '|') return true;
+    if (lastNonEmptyLine.startsWith('|') && (lastNonEmptyLine.match(/\|/g) || []).length < 3) return true;
+    if (/^(?:[-*+]\s*|\d+\.\s*)$/.test(lastNonEmptyLine)) return true;
+    if (/[,:\[{(]\s*$/.test(trimmed)) return true;
+    if (/^[\p{L}\p{N}_./`-]{1,16}$/u.test(lastNonEmptyLine) && !/[.!?;'"`)\]}>]$/.test(lastNonEmptyLine)) {
+        return true;
+    }
+
+    return false;
+}
+
+function toolCallLooksSemanticallyIncomplete(toolCall: ParsedToolCall): boolean {
+    if (!LARGE_PAYLOAD_TOOL_NAMES.has(toolCall.name.toLowerCase())) return false;
+    const payload = getLargePayloadText(toolCall);
+    return payload ? payloadLooksSemanticallyIncomplete(payload) : false;
+}
+
 /**
  * 截断不等于必须续写。
  *
@@ -488,13 +575,20 @@ function toolCallNeedsMoreContinuation(toolCall: ParsedToolCall): boolean {
  * 2. 已恢复出的工具调用明显属于大参数写入类，需要继续补全内容
  */
 export function shouldAutoContinueTruncatedToolResponse(text: string, hasTools: boolean): boolean {
-    if (!hasTools || !isTruncated(text)) return false;
+    if (!hasTools) return false;
+
+    if (!isTruncated(text)) {
+        if (!hasToolCalls(text)) return false;
+        const { toolCalls } = parseToolCalls(text);
+        return toolCalls.some(toolCallLooksSemanticallyIncomplete);
+    }
+
     if (!hasToolCalls(text)) return true;
 
     const { toolCalls } = parseToolCalls(text);
     if (toolCalls.length === 0) return true;
 
-    return toolCalls.some(toolCallNeedsMoreContinuation);
+    return toolCalls.some(toolCallNeedsMoreContinuation) || toolCalls.some(toolCallLooksSemanticallyIncomplete);
 }
 
 // ==================== 续写去重 ====================
@@ -574,6 +668,7 @@ export async function autoContinueCursorToolResponseStream(
     cursorReq: CursorChatRequest,
     initialResponse: string,
     hasTools: boolean,
+    onEvent?: (event: CursorSSEEvent) => void,
 ): Promise<string> {
     let fullResponse = initialResponse;
     const MAX_AUTO_CONTINUE = Math.max(1, getConfig().maxAutoContinue);
@@ -619,6 +714,7 @@ Continue EXACTLY from where you stopped. DO NOT repeat any content already gener
 
         let continuationResponse = '';
         await sendCursorRequest(continuationReq, (event: CursorSSEEvent) => {
+            onEvent?.(event);
             if (event.type === 'text-delta' && event.delta) {
                 continuationResponse += event.delta;
             }
@@ -647,6 +743,7 @@ export async function autoContinueCursorToolResponseFull(
     cursorReq: CursorChatRequest,
     initialText: string,
     hasTools: boolean,
+    onEvent?: (event: CursorSSEEvent) => void,
 ): Promise<string> {
     let fullText = initialText;
     const MAX_AUTO_CONTINUE = Math.max(1, getConfig().maxAutoContinue);
@@ -687,7 +784,7 @@ Continue EXACTLY from where you stopped. DO NOT repeat any content already gener
             ],
         };
 
-        const continuationResponse = await sendCursorRequestFull(continuationReq);
+        const continuationResponse = await sendCursorRequestFull(continuationReq, undefined, undefined, onEvent);
         if (continuationResponse.trim().length === 0) break;
 
         const deduped = deduplicateContinuation(fullText, continuationResponse);
@@ -839,6 +936,7 @@ async function handleDirectTextStream(
     let finalRawResponse = '';
     let finalVisibleText = '';
     let finalThinkingContent = '';
+    let finalCursorUsage: CursorTokenUsage | undefined;
     let streamer = createIncrementalTextStreamer({
         warmupChars: 300,   // ★ 与工具模式对齐：前 300 chars 不释放，确保拒绝检测完成后再流
         transform: sanitizeResponse,
@@ -849,6 +947,7 @@ async function handleDirectTextStream(
         rawResponse: string;
         visibleText: string;
         thinkingContent: string;
+        cursorUsage?: CursorTokenUsage;
         streamer: ReturnType<typeof createIncrementalTextStreamer>;
     }> => {
         let rawResponse = '';
@@ -856,6 +955,7 @@ async function handleDirectTextStream(
         let leadingBuffer = '';
         let leadingResolved = false;
         let thinkingContent = '';
+        let cursorUsage: CursorTokenUsage | undefined;
         const attemptStreamer = createIncrementalTextStreamer({
             warmupChars: 300,   // ★ 与工具模式对齐
             transform: sanitizeResponse,
@@ -879,6 +979,7 @@ async function handleDirectTextStream(
         log.startPhase('send', '发送到 Cursor');
 
         await sendCursorRequest(activeCursorReq, (event: CursorSSEEvent) => {
+            cursorUsage = accumulateCursorUsage(cursorUsage, event);
             if (event.type !== 'text-delta' || !event.delta) return;
 
             if (firstChunk) {
@@ -949,6 +1050,7 @@ async function handleDirectTextStream(
             rawResponse,
             visibleText,
             thinkingContent,
+            cursorUsage,
             streamer: attemptStreamer,
         };
     };
@@ -958,6 +1060,13 @@ async function handleDirectTextStream(
         finalRawResponse = attempt.rawResponse;
         finalVisibleText = attempt.visibleText;
         finalThinkingContent = attempt.thinkingContent;
+        if (attempt.cursorUsage) {
+            finalCursorUsage = {
+                inputTokens: sumOptionalTokens(finalCursorUsage?.inputTokens, attempt.cursorUsage.inputTokens),
+                outputTokens: sumOptionalTokens(finalCursorUsage?.outputTokens, attempt.cursorUsage.outputTokens),
+                totalTokens: sumOptionalTokens(finalCursorUsage?.totalTokens, attempt.cursorUsage.totalTokens),
+            };
+        }
         streamer = attempt.streamer;
 
         // visibleText 始终是剥离 thinking 后的文本，可直接用于拒绝检测
@@ -1019,6 +1128,10 @@ async function handleDirectTextStream(
     }
 
     writeAnthropicTextDelta(res, streamState, finalTextToSend);
+    const finalRecordedResponse = streamer.hasSentText()
+        ? sanitizeResponse(finalVisibleText)
+        : finalTextToSend;
+    const usageSummary = resolveCursorUsage(body, finalRecordedResponse, finalCursorUsage);
 
     if (streamState.textBlockStarted) {
         writeSSE(res, 'content_block_stop', {
@@ -1031,14 +1144,15 @@ async function handleDirectTextStream(
     writeSSE(res, 'message_delta', {
         type: 'message_delta',
         delta: { stop_reason: 'end_turn', stop_sequence: null },
-        usage: { output_tokens: Math.ceil((streamer.hasSentText() ? (finalVisibleText || finalRawResponse) : finalTextToSend).length / 4) },
+        usage: { output_tokens: usageSummary.outputTokens },
     });
     writeSSE(res, 'message_stop', { type: 'message_stop' });
 
-    const finalRecordedResponse = streamer.hasSentText()
-        ? sanitizeResponse(finalVisibleText)
-        : finalTextToSend;
     log.recordFinalResponse(finalRecordedResponse);
+    log.updateSummary({
+        inputTokens: usageSummary.inputTokens,
+        outputTokens: usageSummary.outputTokens,
+    });
     log.complete(finalRecordedResponse.length, 'end_turn');
 
     res.end();
@@ -1081,6 +1195,7 @@ async function handleStream(res: Response, cursorReq: CursorChatRequest, body: A
     let blockIndex = 0;
     let textBlockStarted = false;
     let thinkingBlockEmitted = false;
+    let cursorUsage: CursorTokenUsage | undefined;
 
     // 无工具模式：先缓冲全部响应再检测拒绝，如果是拒绝则重试
     let activeCursorReq = cursorReq;
@@ -1099,6 +1214,7 @@ async function handleStream(res: Response, cursorReq: CursorChatRequest, body: A
 
         try {
             await sendCursorRequest(activeCursorReq, (event: CursorSSEEvent) => {
+                cursorUsage = accumulateCursorUsage(cursorUsage, event);
                 if (event.type !== 'text-delta' || !event.delta) return;
                 if (firstChunk) { log.recordTTFT(); log.endPhase(); log.startPhase('response', '接收响应'); firstChunk = false; }
                 fullResponse += event.delta;
@@ -1401,6 +1517,7 @@ Continue EXACTLY from where you stopped. DO NOT repeat any content already gener
             
             let continuationResponse = '';
             await sendCursorRequest(activeCursorReq, (event: CursorSSEEvent) => {
+                cursorUsage = accumulateCursorUsage(cursorUsage, event);
                 if (event.type === 'text-delta' && event.delta) {
                     continuationResponse += event.delta;
                 }
@@ -1556,6 +1673,8 @@ Please go ahead and pick the most appropriate tool for the current task and outp
 
             if (toolCalls.length > 0) {
                 stopReason = 'tool_use';
+                log.recordToolCalls(toolCalls);
+                log.updateSummary({ toolCallsDetected: toolCalls.length });
 
                 // Check if the residual text is a known refusal, if so, drop it completely!
                 if (isRefusal(cleanText)) {
@@ -1681,13 +1800,18 @@ Please go ahead and pick the most appropriate tool for the current task and outp
         writeSSE(res, 'message_delta', {
             type: 'message_delta',
             delta: { stop_reason: stopReason, stop_sequence: null },
-            usage: { output_tokens: Math.ceil(fullResponse.length / 4) },
+            usage: { output_tokens: resolveCursorUsage(body, fullResponse, cursorUsage).outputTokens },
         });
 
         writeSSE(res, 'message_stop', { type: 'message_stop' });
 
         // ★ 记录完成
         log.recordFinalResponse(fullResponse);
+        const usageSummary = resolveCursorUsage(body, fullResponse, cursorUsage);
+        log.updateSummary({
+            inputTokens: usageSummary.inputTokens,
+            outputTokens: usageSummary.outputTokens,
+        });
         log.complete(fullResponse.length, stopReason);
 
     } catch (err: unknown) {
@@ -1725,7 +1849,10 @@ async function handleNonStream(res: Response, cursorReq: CursorChatRequest, body
     log.startPhase('send', '发送到 Cursor (非流式)');
     const proxyHook = { onProxyTrace: (trace: any) => log.recordProxyTrace(trace) };
     const apiStart = Date.now();
-    let fullText = await sendCursorRequestFull(cursorReq, undefined, proxyHook);
+    let cursorUsage: CursorTokenUsage | undefined;
+    let fullText = await sendCursorRequestFull(cursorReq, undefined, proxyHook, (event) => {
+        cursorUsage = accumulateCursorUsage(cursorUsage, event);
+    });
     log.recordTTFT();
     log.recordCursorApiTime(apiStart);
     log.recordRawResponse(fullText);
@@ -1770,7 +1897,9 @@ async function handleNonStream(res: Response, cursorReq: CursorChatRequest, body
             log.updateSummary({ retryCount });
             const retryBody = buildRetryRequest(body, attempt);
             activeCursorReq = await convertToCursorRequest(retryBody);
-            fullText = await sendCursorRequestFull(activeCursorReq, undefined, proxyHook);
+            fullText = await sendCursorRequestFull(activeCursorReq, undefined, proxyHook, (event) => {
+                cursorUsage = accumulateCursorUsage(cursorUsage, event);
+            });
             // 重试后也需要剥离 thinking 标签
             if (hasLeadingThinking(fullText)) {
                 const { thinkingContent: retryThinking, strippedText: retryStripped } = extractThinking(fullText);
@@ -1804,7 +1933,9 @@ async function handleNonStream(res: Response, cursorReq: CursorChatRequest, body
         retryCount++;
         log.warn('Handler', 'retry', `非流式响应过短 (${fullText.length} chars)，重试第${retryCount}次`);
         activeCursorReq = await convertToCursorRequest(body);
-        fullText = await sendCursorRequestFull(activeCursorReq, undefined, proxyHook);
+        fullText = await sendCursorRequestFull(activeCursorReq, undefined, proxyHook, (event) => {
+            cursorUsage = accumulateCursorUsage(cursorUsage, event);
+        });
         log.info('Handler', 'retry', `非流式重试响应: ${fullText.length} chars`, { preview: fullText.substring(0, 200) });
     }
 
@@ -1849,7 +1980,9 @@ Continue EXACTLY from where you stopped. DO NOT repeat any content already gener
             ],
         };
 
-        const continuationResponse = await sendCursorRequestFull(continuationReq, undefined, proxyHook);
+        const continuationResponse = await sendCursorRequestFull(continuationReq, undefined, proxyHook, (event) => {
+            cursorUsage = accumulateCursorUsage(cursorUsage, event);
+        });
 
         if (continuationResponse.trim().length === 0) {
             log.warn('Handler', 'continuation', '非流式续写返回空响应，停止续写');
@@ -1961,7 +2094,9 @@ Please go ahead and pick the most appropriate tool for the current task and outp
                 },
             ];
             activeCursorReq = { ...activeCursorReq, messages: forceMessages };
-            fullText = await sendCursorRequestFull(activeCursorReq, undefined, proxyHook);
+            fullText = await sendCursorRequestFull(activeCursorReq, undefined, proxyHook, (event) => {
+                cursorUsage = accumulateCursorUsage(cursorUsage, event);
+            });
             ({ toolCalls, cleanText } = parseToolCalls(fullText));
         }
         if (toolChoice?.type === 'any' && toolCalls.length === 0) {
@@ -1970,6 +2105,8 @@ Please go ahead and pick the most appropriate tool for the current task and outp
 
         if (toolCalls.length > 0) {
             stopReason = 'tool_use';
+            log.recordToolCalls(toolCalls);
+            log.updateSummary({ toolCallsDetected: toolCalls.length });
 
             if (isRefusal(cleanText)) {
                 log.info('Handler', 'sanitize', `非流式抑制工具调用中的拒绝文本`, { preview: cleanText.substring(0, 200) });
@@ -2014,10 +2151,13 @@ Please go ahead and pick the most appropriate tool for the current task and outp
         model: body.model,
         stop_reason: stopReason,
         stop_sequence: null,
-        usage: { 
-            input_tokens: estimateInputTokens(body), 
-            output_tokens: Math.ceil(fullText.length / 3) 
-        },
+        usage: (() => {
+            const usageSummary = resolveCursorUsage(body, fullText, cursorUsage);
+            return {
+                input_tokens: usageSummary.inputTokens,
+                output_tokens: usageSummary.outputTokens,
+            };
+        })(),
     };
 
     if (delaySuccessHeader) {
@@ -2029,6 +2169,10 @@ Please go ahead and pick the most appropriate tool for the current task and outp
 
     // ★ 记录完成
     log.recordFinalResponse(fullText);
+    log.updateSummary({
+        inputTokens: response.usage.input_tokens,
+        outputTokens: response.usage.output_tokens,
+    });
     log.complete(fullText.length, stopReason);
 
     } catch (err: unknown) {

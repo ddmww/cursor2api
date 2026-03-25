@@ -128,6 +128,7 @@ function renderRL(){
     const dateStr=fmtDate(r.startTime);
     let bd='';if(r.stream)bd+='<span class="bg str">Stream</span>';if(r.hasTools)bd+='<span class="bg tls">T:'+r.toolCount+'</span>';
     if(r.retryCount>0)bd+='<span class="bg rtr">R:'+r.retryCount+'</span>';if(r.continuationCount>0)bd+='<span class="bg cnt">C:'+r.continuationCount+'</span>';
+    if(r.inputTokens!=null||r.outputTokens!=null)bd+='<span class="bg tls">ΣT:'+fmtN((r.inputTokens||0)+(r.outputTokens||0))+'</span>';
     if(r.proxyAttemptCount>0)bd+='<span class="bg tls">P:'+r.proxyAttemptCount+'</span>';
     if(r.proxyRotated)bd+='<span class="bg rtr">ROT</span>';
     if(r.status==='error')bd+='<span class="bg err">ERR</span>';if(r.status==='intercepted')bd+='<span class="bg icp">INTERCEPT</span>';
@@ -174,7 +175,7 @@ function renderSCard(s){
   const c=document.getElementById('scard');c.style.display='block';
   const dur=s.endTime?((s.endTime-s.startTime)/1000).toFixed(2)+'s':'进行中...';
   const sc={processing:'var(--yellow)',success:'var(--green)',error:'var(--red)',intercepted:'var(--pink)'}[s.status]||'var(--t3)';
-  const items=[['状态','<span style="color:'+sc+'">'+s.status.toUpperCase()+'</span>'],['耗时',dur],['模型',escH(s.model)],['格式',(s.apiFormat||'anthropic').toUpperCase()],['消息数',s.messageCount],['响应字数',fmtN(s.responseChars)],['TTFT',s.ttft?s.ttft+'ms':'-'],['API耗时',s.cursorApiTime?s.cursorApiTime+'ms':'-'],['停止原因',s.stopReason||'-'],['重试',s.retryCount],['续写',s.continuationCount],['工具调用',s.toolCallsDetected],['代理',escH(s.selectedProxy||'直连')],['代理尝试',s.proxyAttemptCount||0],['代理切换',s.proxyRotated?'是':'否']];
+  const items=[['状态','<span style="color:'+sc+'">'+s.status.toUpperCase()+'</span>'],['耗时',dur],['模型',escH(s.model)],['格式',(s.apiFormat||'anthropic').toUpperCase()],['消息数',s.messageCount],['响应字数',fmtN(s.responseChars)],['输入Token',s.inputTokens!=null?fmtN(s.inputTokens):'-'],['输出Token',s.outputTokens!=null?fmtN(s.outputTokens):'-'],['TTFT',s.ttft?s.ttft+'ms':'-'],['API耗时',s.cursorApiTime?s.cursorApiTime+'ms':'-'],['停止原因',s.stopReason||'-'],['重试',s.retryCount],['续写',s.continuationCount],['工具调用',s.toolCallsDetected],['代理',escH(s.selectedProxy||'直连')],['代理尝试',s.proxyAttemptCount||0],['代理切换',s.proxyRotated?'是':'否']];
   if(s.thinkingChars>0)items.push(['Thinking',fmtN(s.thinkingChars)+' chars']);
   if(s.proxyFailures&&s.proxyFailures.length)items.push(['代理失败',escH(s.proxyFailures.join(' | '))]);
   if(s.error)items.push(['错误','<span style="color:var(--red)">'+escH(s.error)+'</span>']);
@@ -251,13 +252,15 @@ function renderPromptsTab(tc){
     const firstOrigUser=curPayload.messages?.find(m=>m.role==='user');
     const toolInstructionChars=firstCursorMsg&&firstOrigUser?Math.max(0,firstCursorMsg.contentLength-(firstOrigUser?.contentLength||0)):0;
     h+='<div class="content-section"><div class="cs-title">🔄 转换摘要</div>';
-    h+='<div class="sgrid" style="grid-template-columns:repeat(3,1fr);gap:8px;margin:8px 0">';
+    h+='<div class="sgrid" style="grid-template-columns:repeat(4,1fr);gap:8px;margin:8px 0">';
     h+='<div class="si2"><span class="l">原始工具数</span><span class="v">'+origToolCount+'</span></div>';
     h+='<div class="si2"><span class="l">Cursor 工具数</span><span class="v" style="color:var(--green)">0 <span style="font-size:10px;color:var(--t2)">(嵌入消息)</span></span></div>';
     h+='<div class="si2"><span class="l">工具指令占用</span><span class="v">'+(toolInstructionChars>0?fmtN(toolInstructionChars)+' chars':origToolCount>0?'嵌入第1条消息':'N/A')+'</span></div>';
+    h+='<div class="si2"><span class="l">输入Token</span><span class="v">'+(s.inputTokens!=null?fmtN(s.inputTokens):'—')+'</span></div>';
     h+='<div class="si2"><span class="l">原始消息数</span><span class="v">'+origMsgCount+'</span></div>';
     h+='<div class="si2"><span class="l">Cursor 消息数</span><span class="v" style="color:var(--green)">'+cursorMsgCount+'</span></div>';
     h+='<div class="si2"><span class="l">总上下文大小</span><span class="v">'+(cursorTotalChars>0?fmtN(cursorTotalChars)+' chars':'—')+'</span></div>';
+    h+='<div class="si2"><span class="l">输出Token</span><span class="v">'+(s.outputTokens!=null?fmtN(s.outputTokens):'—')+'</span></div>';
     h+='</div>';
     if(origToolCount>0){
       h+='<div style="color:var(--yellow);font-size:12px;padding:6px 10px;background:rgba(234,179,8,0.1);border-radius:6px;margin-top:4px">⚠️ Cursor API 不支持原生 tools 参数。'+origToolCount+' 个工具定义已转换为文本指令，嵌入在 user #1 消息中'+(toolInstructionChars>0?'（约 '+fmtN(toolInstructionChars)+' chars）':'')+'</div>';

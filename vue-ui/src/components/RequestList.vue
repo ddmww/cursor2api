@@ -67,6 +67,7 @@
           <span v-if="req.toolCallsDetected > 0" class="bg bg-call">C:{{ req.toolCallsDetected }}</span>
           <span v-if="req.retryCount > 0" class="bg bg-retry">R:{{ req.retryCount }}</span>
           <span v-if="req.continuationCount > 0" class="bg bg-cont">+{{ req.continuationCount }}</span>
+          <span v-if="req.inputTokens != null || req.outputTokens != null" class="bg bg-token">ΣT:{{ fmtN((req.inputTokens ?? 0) + (req.outputTokens ?? 0)) }}</span>
           <span v-if="req.thinkingChars > 0" class="bg bg-think">🤔 {{ fmtN(req.thinkingChars) }} chars</span>
           <span v-if="req.status === 'error'" class="bg bg-err">ERR</span>
           <span v-if="req.status === 'intercepted'" class="bg bg-int">INTERCEPT</span>
@@ -323,6 +324,7 @@ function selectReq(id: string) {
 .bg-call { background: color-mix(in srgb, var(--cyan) 15%, transparent); color: var(--cyan); }
 .bg-retry { background: color-mix(in srgb, var(--yellow) 15%, transparent); color: var(--yellow); }
 .bg-cont { background: color-mix(in srgb, var(--purple) 15%, transparent); color: var(--purple); }
+.bg-token { background: color-mix(in srgb, #0f766e 15%, transparent); color: #0f766e; }
 .bg-think { background: color-mix(in srgb, var(--text-muted) 15%, transparent); color: var(--text-muted); }
 .bg-err { background: color-mix(in srgb, var(--red) 15%, transparent); color: var(--red); }
 .bg-int { background: color-mix(in srgb, var(--pink) 15%, transparent); color: var(--pink); }

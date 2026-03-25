@@ -23,6 +23,7 @@ import type {
     AnthropicTool,
     CursorChatRequest,
     CursorSSEEvent,
+    CursorTokenUsage,
 } from './types.js';
 import { convertToCursorRequest, parseToolCalls, hasToolCalls } from './converter.js';
 import { sendCursorRequest, sendCursorRequestFull } from './cursor-client.js';
@@ -44,6 +45,8 @@ import {
     fixedFallbackResponsesEnabled,
     MAX_REFUSAL_RETRIES,
     estimateInputTokens,
+    accumulateCursorUsage,
+    resolveCursorUsage,
 } from './handler.js';
 
 function chatId(): string {
@@ -579,14 +582,21 @@ function writeOpenAITextDelta(
 function buildOpenAIUsage(
     anthropicReq: AnthropicRequest,
     outputText: string,
+    cursorUsage?: CursorTokenUsage,
 ): { prompt_tokens: number; completion_tokens: number; total_tokens: number } {
-    const promptTokens = estimateInputTokens(anthropicReq);
-    const completionTokens = Math.ceil(outputText.length / 3);
+    const usage = resolveCursorUsage(anthropicReq, outputText, cursorUsage);
+    const promptTokens = usage.inputTokens;
+    const completionTokens = usage.outputTokens;
     return {
         prompt_tokens: promptTokens,
         completion_tokens: completionTokens,
         total_tokens: promptTokens + completionTokens,
     };
+}
+
+function sumOptionalUsage(current: number | undefined, next: number | undefined): number | undefined {
+    if (current === undefined && next === undefined) return undefined;
+    return (current ?? 0) + (next ?? 0);
 }
 
 function writeOpenAIReasoningDelta(
@@ -625,6 +635,7 @@ async function handleOpenAIIncrementalTextStream(
     let finalRawResponse = '';
     let finalVisibleText = '';
     let finalReasoningContent = '';
+    let finalCursorUsage: CursorTokenUsage | undefined;
     let streamer = createIncrementalTextStreamer({
         transform: sanitizeResponse,
         isBlockedPrefix: (text) => isRefusal(text.substring(0, 300)),
@@ -635,6 +646,7 @@ async function handleOpenAIIncrementalTextStream(
         rawResponse: string;
         visibleText: string;
         reasoningContent: string;
+        cursorUsage?: CursorTokenUsage;
         streamer: ReturnType<typeof createIncrementalTextStreamer>;
     }> => {
         let rawResponse = '';
@@ -642,6 +654,7 @@ async function handleOpenAIIncrementalTextStream(
         let leadingBuffer = '';
         let leadingResolved = false;
         let reasoningContent = '';
+        let cursorUsage: CursorTokenUsage | undefined;
         const attemptStreamer = createIncrementalTextStreamer({
             transform: sanitizeResponse,
             isBlockedPrefix: (text) => isRefusal(text.substring(0, 300)),
@@ -661,6 +674,7 @@ async function handleOpenAIIncrementalTextStream(
         };
 
         await sendCursorRequest(activeCursorReq, (event: CursorSSEEvent) => {
+            cursorUsage = accumulateCursorUsage(cursorUsage, event);
             if (event.type !== 'text-delta' || !event.delta) return;
 
             rawResponse += event.delta;
@@ -692,6 +706,7 @@ async function handleOpenAIIncrementalTextStream(
             rawResponse,
             visibleText,
             reasoningContent,
+            cursorUsage,
             streamer: attemptStreamer,
         };
     };
@@ -701,6 +716,13 @@ async function handleOpenAIIncrementalTextStream(
         finalRawResponse = attempt.rawResponse;
         finalVisibleText = attempt.visibleText;
         finalReasoningContent = attempt.reasoningContent;
+        if (attempt.cursorUsage) {
+            finalCursorUsage = {
+                inputTokens: sumOptionalUsage(finalCursorUsage?.inputTokens, attempt.cursorUsage.inputTokens),
+                outputTokens: sumOptionalUsage(finalCursorUsage?.outputTokens, attempt.cursorUsage.outputTokens),
+                totalTokens: sumOptionalUsage(finalCursorUsage?.totalTokens, attempt.cursorUsage.totalTokens),
+            };
+        }
         streamer = attempt.streamer;
 
         const textForRefusalCheck = finalVisibleText;
@@ -736,6 +758,14 @@ async function handleOpenAIIncrementalTextStream(
     }
 
     writeOpenAITextDelta(res, streamMeta.id, streamMeta.created, streamMeta.model, finalTextToSend);
+    const finalRecordedResponse = streamer.hasSentText()
+        ? sanitizeResponse(finalVisibleText || finalRawResponse)
+        : finalTextToSend;
+    const usage = buildOpenAIUsage(
+        anthropicReq,
+        streamer.hasSentText() ? (finalVisibleText || finalRawResponse) : finalTextToSend,
+        finalCursorUsage,
+    );
 
     writeOpenAISSE(res, {
         id: streamMeta.id,
@@ -747,17 +777,18 @@ async function handleOpenAIIncrementalTextStream(
             delta: {},
             finish_reason: 'stop',
         }],
-        usage: buildOpenAIUsage(anthropicReq, streamer.hasSentText() ? (finalVisibleText || finalRawResponse) : finalTextToSend),
+        usage,
     });
 
     log.recordRawResponse(finalRawResponse);
     if (finalReasoningContent) {
         log.recordThinking(finalReasoningContent);
     }
-    const finalRecordedResponse = streamer.hasSentText()
-        ? sanitizeResponse(finalVisibleText || finalRawResponse)
-        : finalTextToSend;
     log.recordFinalResponse(finalRecordedResponse);
+    log.updateSummary({
+        inputTokens: usage.prompt_tokens,
+        outputTokens: usage.completion_tokens,
+    });
     log.complete(finalRecordedResponse.length, 'stop');
 
     res.write('data: [DONE]\n\n');
@@ -800,11 +831,13 @@ async function handleOpenAIStream(
     let activeCursorReq = cursorReq;
     const proxyHook = { onProxyTrace: (trace: any) => log.recordProxyTrace(trace) };
     let retryCount = 0;
+    let cursorUsage: CursorTokenUsage | undefined;
 
     // 统一缓冲模式：先缓冲全部响应，再检测拒绝和处理
     const executeStream = async (onTextDelta?: (delta: string) => void) => {
         fullResponse = '';
         await sendCursorRequest(activeCursorReq, (event: CursorSSEEvent) => {
+            cursorUsage = accumulateCursorUsage(cursorUsage, event);
             if (event.type !== 'text-delta' || !event.delta) return;
             fullResponse += event.delta;
             onTextDelta?.(event.delta);
@@ -976,7 +1009,9 @@ async function handleOpenAIStream(
         }
 
         if (hasTools) {
-            fullResponse = await autoContinueCursorToolResponseStream(activeCursorReq, fullResponse, hasTools);
+            fullResponse = await autoContinueCursorToolResponseStream(activeCursorReq, fullResponse, hasTools, (event) => {
+                cursorUsage = accumulateCursorUsage(cursorUsage, event);
+            });
         }
 
         let finishReason: 'stop' | 'tool_calls' = 'stop';
@@ -1107,7 +1142,7 @@ async function handleOpenAIStream(
                 delta: {},
                 finish_reason: finishReason,
             }],
-            usage: buildOpenAIUsage(anthropicReq, fullResponse),
+            usage: buildOpenAIUsage(anthropicReq, fullResponse, cursorUsage),
         });
 
         log.recordRawResponse(fullResponse);
@@ -1115,6 +1150,11 @@ async function handleOpenAIStream(
             log.recordThinking(reasoningContent);
         }
         log.recordFinalResponse(fullResponse);
+        const usageSummary = resolveCursorUsage(anthropicReq, fullResponse, cursorUsage);
+        log.updateSummary({
+            inputTokens: usageSummary.inputTokens,
+            outputTokens: usageSummary.outputTokens,
+        });
         log.complete(fullResponse.length, finishReason);
 
         res.write('data: [DONE]\n\n');
@@ -1147,7 +1187,10 @@ async function handleOpenAINonStream(
 ): Promise<void> {
     let activeCursorReq = cursorReq;
     const proxyHook = { onProxyTrace: (trace: any) => log.recordProxyTrace(trace) };
-    let fullText = await sendCursorRequestFull(activeCursorReq, undefined, proxyHook);
+    let cursorUsage: CursorTokenUsage | undefined;
+    let fullText = await sendCursorRequestFull(activeCursorReq, undefined, proxyHook, (event) => {
+        cursorUsage = accumulateCursorUsage(cursorUsage, event);
+    });
     const hasTools = (body.tools?.length ?? 0) > 0;
     let upstreamTextForBlockCheck = fullText;
     let usedSyntheticFallback = false;
@@ -1177,7 +1220,9 @@ async function handleOpenAINonStream(
             const retryBody = buildRetryRequest(anthropicReq, attempt);
             const retryCursorReq = await convertToCursorRequest(retryBody);
             activeCursorReq = retryCursorReq;
-            fullText = await sendCursorRequestFull(activeCursorReq, undefined, proxyHook);
+            fullText = await sendCursorRequestFull(activeCursorReq, undefined, proxyHook, (event) => {
+                cursorUsage = accumulateCursorUsage(cursorUsage, event);
+            });
             // 重试响应也需要先剥离 thinking
             if (hasLeadingThinking(fullText)) {
                 fullText = extractThinking(fullText).strippedText;
@@ -1201,7 +1246,9 @@ async function handleOpenAINonStream(
     }
 
     if (hasTools) {
-        fullText = await autoContinueCursorToolResponseFull(activeCursorReq, fullText, hasTools);
+        fullText = await autoContinueCursorToolResponseFull(activeCursorReq, fullText, hasTools, (event) => {
+            cursorUsage = accumulateCursorUsage(cursorUsage, event);
+        });
     }
 
     if (!usedSyntheticFallback) {
@@ -1269,7 +1316,7 @@ async function handleOpenAINonStream(
             },
             finish_reason: finishReason,
         }],
-        usage: buildOpenAIUsage(anthropicReq, fullText),
+        usage: buildOpenAIUsage(anthropicReq, fullText, cursorUsage),
     };
 
     res.json(response);
@@ -1279,6 +1326,11 @@ async function handleOpenAINonStream(
         log.recordThinking(reasoningContent);
     }
     log.recordFinalResponse(fullText);
+    const usageSummary = resolveCursorUsage(anthropicReq, fullText, cursorUsage);
+    log.updateSummary({
+        inputTokens: usageSummary.inputTokens,
+        outputTokens: usageSummary.outputTokens,
+    });
     log.complete(fullText.length, finishReason);
 }
 
@@ -1573,6 +1625,7 @@ async function handleResponsesStream(
     let activeCursorReq = cursorReq;
     const proxyHook = { onProxyTrace: (trace: any) => log.recordProxyTrace(trace) };
     let retryCount = 0;
+    let cursorUsage: CursorTokenUsage | undefined;
 
     // ★ 流式保活：防止网关 504
     const keepaliveInterval = setInterval(() => {
@@ -1588,6 +1641,7 @@ async function handleResponsesStream(
         const executeStream = async () => {
             fullResponse = '';
             await sendCursorRequest(activeCursorReq, (event: CursorSSEEvent) => {
+                cursorUsage = accumulateCursorUsage(cursorUsage, event);
                 if (event.type !== 'text-delta' || !event.delta) return;
                 fullResponse += event.delta;
             }, undefined, proxyHook);
@@ -1627,16 +1681,21 @@ async function handleResponsesStream(
         }
 
         if (hasTools) {
-            fullResponse = await autoContinueCursorToolResponseStream(activeCursorReq, fullResponse, hasTools);
+            fullResponse = await autoContinueCursorToolResponseStream(activeCursorReq, fullResponse, hasTools, (event) => {
+                cursorUsage = accumulateCursorUsage(cursorUsage, event);
+            });
         }
 
         // 清洗响应
         fullResponse = sanitizeResponse(fullResponse);
 
         // 计算 usage
-        const inputTokens = estimateInputTokens(anthropicReq);
-        const outputTokens = Math.ceil(fullResponse.length / 3);
-        const usage = { input_tokens: inputTokens, output_tokens: outputTokens, total_tokens: inputTokens + outputTokens };
+        const usageSummary = resolveCursorUsage(anthropicReq, fullResponse, cursorUsage);
+        const usage = {
+            input_tokens: usageSummary.inputTokens,
+            output_tokens: usageSummary.outputTokens,
+            total_tokens: usageSummary.inputTokens + usageSummary.outputTokens,
+        };
 
         // ★ 工具调用解析 + Responses API 格式输出
         if (hasTools && hasToolCalls(fullResponse)) {
@@ -1749,6 +1808,10 @@ async function handleResponsesStream(
         }
         log.recordRawResponse(fullResponse);
         log.recordFinalResponse(fullResponse);
+        log.updateSummary({
+            inputTokens: usage.input_tokens,
+            outputTokens: usage.output_tokens,
+        });
         log.complete(fullResponse.length, toolCallsDetected > 0 ? 'tool_calls' : 'stop');
     } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
@@ -1804,7 +1867,10 @@ async function handleResponsesNonStream(
 ): Promise<void> {
     let activeCursorReq = cursorReq;
     const proxyHook = { onProxyTrace: (trace: any) => log.recordProxyTrace(trace) };
-    let fullText = await sendCursorRequestFull(activeCursorReq, undefined, proxyHook);
+    let cursorUsage: CursorTokenUsage | undefined;
+    let fullText = await sendCursorRequestFull(activeCursorReq, undefined, proxyHook, (event) => {
+        cursorUsage = accumulateCursorUsage(cursorUsage, event);
+    });
     const hasTools = (anthropicReq.tools?.length ?? 0) > 0;
     let upstreamTextForBlockCheck = fullText;
     let usedSyntheticFallback = false;
@@ -1821,7 +1887,9 @@ async function handleResponsesNonStream(
             const retryBody = buildRetryRequest(anthropicReq, attempt);
             const retryCursorReq = await convertToCursorRequest(retryBody);
             activeCursorReq = retryCursorReq;
-            fullText = await sendCursorRequestFull(activeCursorReq, undefined, proxyHook);
+            fullText = await sendCursorRequestFull(activeCursorReq, undefined, proxyHook, (event) => {
+                cursorUsage = accumulateCursorUsage(cursorUsage, event);
+            });
             if (hasLeadingThinking(fullText)) {
                 fullText = extractThinking(fullText).strippedText;
             }
@@ -1839,7 +1907,9 @@ async function handleResponsesNonStream(
     }
 
     if (hasTools) {
-        fullText = await autoContinueCursorToolResponseFull(activeCursorReq, fullText, hasTools);
+        fullText = await autoContinueCursorToolResponseFull(activeCursorReq, fullText, hasTools, (event) => {
+            cursorUsage = accumulateCursorUsage(cursorUsage, event);
+        });
     }
 
     if (!usedSyntheticFallback) {
@@ -1852,9 +1922,12 @@ async function handleResponsesNonStream(
 
     const respId = responsesId();
     const model = (body.model as string) || 'gpt-4';
-    const inputTokens = estimateInputTokens(anthropicReq);
-    const outputTokens = Math.ceil(fullText.length / 3);
-    const usage = { input_tokens: inputTokens, output_tokens: outputTokens, total_tokens: inputTokens + outputTokens };
+    const usageSummary = resolveCursorUsage(anthropicReq, fullText, cursorUsage);
+    const usage = {
+        input_tokens: usageSummary.inputTokens,
+        output_tokens: usageSummary.outputTokens,
+        total_tokens: usageSummary.inputTokens + usageSummary.outputTokens,
+    };
 
     const output: Record<string, unknown>[] = [];
     let toolCallsDetected = 0;
@@ -1898,6 +1971,10 @@ async function handleResponsesNonStream(
 
     log.recordRawResponse(fullText);
     log.recordFinalResponse(fullText);
+    log.updateSummary({
+        inputTokens: usage.input_tokens,
+        outputTokens: usage.output_tokens,
+    });
     log.complete(fullText.length, toolCallsDetected > 0 ? 'tool_calls' : 'stop');
 }
 
