@@ -286,7 +286,10 @@ export function markProxyPoolFailure(
     if (!entry) return;
 
     entry.lastError = reason;
-    entry.cooldownUntil = Date.now() + Math.max(1, getConfig().proxyPool.cooldownSeconds) * 1000;
+    const cooldownSeconds = Math.max(0, getConfig().proxyPool.cooldownSeconds);
+    entry.cooldownUntil = cooldownSeconds > 0
+        ? Date.now() + cooldownSeconds * 1000
+        : undefined;
     if (opts?.rateLimited) {
         entry.consecutive429 += 1;
     }

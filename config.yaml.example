@@ -36,7 +36,7 @@ timeout: 120
 #     - "http://mihomo:10001"
 #     - "http://mihomo:10002"
 #     - "http://mihomo:10003"
-#   cooldown_seconds: 30
+#   cooldown_seconds: 30  # 设为 0 表示不进入冷却窗口
 #   fresh_connection_per_request: false
 #   health_check:
 #     enabled: true

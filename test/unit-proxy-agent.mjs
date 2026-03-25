@@ -180,7 +180,9 @@ function markPoolFailure(url, reason, opts = {}) {
     const entry = runtimeEntries.get(url);
     if (!entry) return;
     entry.lastError = reason;
-    entry.cooldownUntil = Date.now() + mockConfig.proxyPool.cooldownSeconds * 1000;
+    entry.cooldownUntil = mockConfig.proxyPool.cooldownSeconds > 0
+        ? Date.now() + mockConfig.proxyPool.cooldownSeconds * 1000
+        : undefined;
     if (opts.rateLimited) entry.consecutive429 += 1;
     if (opts.transport) entry.healthy = false;
     failureMarks.push({ url, reason, ...opts });
@@ -276,6 +278,20 @@ await test('冷却中的代理会被跳过', () => {
     syncPool();
     runtimeEntries.get('http://mihomo:10001').cooldownUntil = Date.now() + 60_000;
     assertEqual(selectCursorProxy().url, 'http://mihomo:10002');
+});
+
+await test('冷却秒数为 0 时失败节点不会进入冷却窗口', async () => {
+    resetState();
+    mockConfig.proxyPool.enabled = true;
+    mockConfig.proxyPool.cooldownSeconds = 0;
+    mockConfig.proxyPool.urls = ['http://mihomo:10001', 'http://mihomo:10002'];
+    await fetchWithProxyFailover('cursor', async (selection) => {
+        if (selection.url === 'http://mihomo:10001') return { status: 429 };
+        return { status: 200 };
+    });
+    const entry = runtimeEntries.get('http://mihomo:10001');
+    assertEqual(entry.cooldownUntil, undefined);
+    assertEqual(selectCursorProxy().url, 'http://mihomo:10001');
 });
 
 await test('健康检查开启时会跳过 unhealthy 节点', () => {

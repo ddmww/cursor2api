@@ -77,7 +77,7 @@ cp config.yaml.example config.yaml
 | `proxy` | 全局代理（可选） | 不配置 |
 | `proxy_pool.enabled` | 启用代理池轮询 | `false` |
 | `proxy_pool.urls` | 代理池节点列表（`http/https`，也支持 `direct`） | 空 |
-| `proxy_pool.cooldown_seconds` | 429 / 网络错误冷却秒数 | `30` |
+| `proxy_pool.cooldown_seconds` | 429 / 网络错误冷却秒数（可设 `0` 禁用冷却） | `30` |
 | `proxy_pool.health_check.*` | 代理池健康检查配置 | 关闭 |
 | `vision.enabled` | 开启视觉拦截 | `true` |
 | `vision.mode` | 视觉模式：`ocr` / `api` | `ocr` |

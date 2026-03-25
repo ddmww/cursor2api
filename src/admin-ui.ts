@@ -503,8 +503,8 @@ function validateConfig(input: unknown): { config?: EditableYamlConfig; errors: 
     normalized.proxy_pool.health_check.interval_seconds = asInt(proxyPoolHealthCheck.interval_seconds, normalized.proxy_pool.health_check.interval_seconds);
     normalized.proxy_pool.health_check.url = asString(proxyPoolHealthCheck.url, normalized.proxy_pool.health_check.url).trim();
 
-    if (!Number.isInteger(normalized.proxy_pool.cooldown_seconds) || normalized.proxy_pool.cooldown_seconds <= 0) {
-        errors['proxy_pool.cooldown_seconds'] = 'proxy_pool.cooldown_seconds 必须是正整数。';
+    if (!Number.isInteger(normalized.proxy_pool.cooldown_seconds) || normalized.proxy_pool.cooldown_seconds < 0) {
+        errors['proxy_pool.cooldown_seconds'] = 'proxy_pool.cooldown_seconds 必须是大于等于 0 的整数。';
     }
     if (!Number.isInteger(normalized.proxy_pool.health_check.interval_seconds) || normalized.proxy_pool.health_check.interval_seconds <= 0) {
         errors['proxy_pool.health_check.interval_seconds'] = 'proxy_pool.health_check.interval_seconds 必须是正整数。';
