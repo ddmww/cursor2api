@@ -515,14 +515,14 @@ function validateConfig(input: unknown): { config?: EditableYamlConfig; errors: 
         errors['proxy_pool.health_check.url'] = 'proxy_pool.health_check.url 必须是 http:// 或 https:// 地址。';
     }
     for (const [index, url] of normalized.proxy_pool.urls.entries()) {
-        const proxyError = validateHttpProxyUrl(url);
+        const proxyError = validateHttpProxyUrl(url, { allowDirect: true });
         if (proxyError) {
             errors['proxy_pool.urls'] = `第 ${index + 1} 个代理地址无效：${proxyError}`;
             break;
         }
     }
     if (normalized.proxy_pool.enabled && normalized.proxy_pool.urls.length === 0) {
-        errors['proxy_pool.urls'] = '启用代理池时，至少需要配置一个 http:// 或 https:// 代理地址。';
+        errors['proxy_pool.urls'] = '启用代理池时，至少需要配置一个 http:// / https:// 代理地址，或一行 direct 表示服务器直连。';
     }
 
     const upstreamBlocker = asObject(raw.upstream_blocker);

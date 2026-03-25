@@ -76,7 +76,7 @@ cp config.yaml.example config.yaml
 | `compression.level` | 压缩级别 1-3 | `2` (中等) |
 | `proxy` | 全局代理（可选） | 不配置 |
 | `proxy_pool.enabled` | 启用代理池轮询 | `false` |
-| `proxy_pool.urls` | 代理池节点列表（仅 `http/https`） | 空 |
+| `proxy_pool.urls` | 代理池节点列表（`http/https`，也支持 `direct`） | 空 |
 | `proxy_pool.cooldown_seconds` | 429 / 网络错误冷却秒数 | `30` |
 | `proxy_pool.health_check.*` | 代理池健康检查配置 | 关闭 |
 | `vision.enabled` | 开启视觉拦截 | `true` |
@@ -313,7 +313,7 @@ AI 按此格式输出 → 我们解析并转换为标准的 Anthropic `tool_use`
 | `MAX_AUTO_CONTINUE` | 截断自动续写次数 (`0`=禁用) |
 | `SANITIZE_RESPONSE` | 响应内容清洗开关 (`true`/`false`，默认 `false`) |
 
-> 💡 代理池 v1 只支持 `config.yaml` / `/admin` 配置，不提供环境变量列表格式。Mihomo 请暴露 `http://` 或 `https://` 的 mixed / http 入口，`socks5://` 不受支持。
+> 💡 代理池 v1 只支持 `config.yaml` / `/admin` 配置，不提供环境变量列表格式。Mihomo 请暴露 `http://` 或 `https://` 的 mixed / http 入口，`socks5://` 不受支持。若要把服务器本机直连也混进轮询，可在 `proxy_pool.urls` 里单独加一行 `direct`。
 
 图片处理开关在 `config.yaml` 中控制：
 

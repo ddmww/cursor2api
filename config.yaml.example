@@ -27,10 +27,12 @@ timeout: 120
 # 代理池（可选）
 # v1 仅支持轮询策略：遇到 429 / 网络错误时将当前节点冷却，并立即切下一个节点重试 1 次
 # ⚠️ 只支持 http / https 代理地址；Mihomo 请使用 mixed / http 入口，不支持 socks5://
+# 💡 也可以写一行 direct，表示把“服务器本机直连”作为一个轮询节点混进代理池
 # 💡 启用后 Cursor 与 Vision 默认优先走池；如果池里没有可用节点，会回退到上面的单 proxy
 # proxy_pool:
 #   enabled: true
 #   urls:
+#     - "direct"
 #     - "http://mihomo:10001"
 #     - "http://mihomo:10002"
 #     - "http://mihomo:10003"

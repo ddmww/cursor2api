@@ -71,7 +71,17 @@ function resetState() {
     dispatcherCache.clear();
 }
 
-function validateHttpProxyUrl(url) {
+function isDirectProxyPoolUrl(url) {
+    const normalized = String(url || '').trim().toLowerCase();
+    return normalized === 'direct' || normalized === 'direct://' || normalized === '直连';
+}
+
+function normalizePoolUrl(url) {
+    return isDirectProxyPoolUrl(url) ? 'direct' : url.trim();
+}
+
+function validateHttpProxyUrl(url, options = {}) {
+    if (options.allowDirect && isDirectProxyPoolUrl(url)) return undefined;
     let parsed;
     try {
         parsed = new URL(url);
@@ -84,11 +94,11 @@ function validateHttpProxyUrl(url) {
 }
 
 function syncPool() {
-    runtimeUrls = [...new Set((mockConfig.proxyPool.urls || []).map(s => s.trim()).filter(Boolean))];
+    runtimeUrls = [...new Set((mockConfig.proxyPool.urls || []).map(normalizePoolUrl).filter(Boolean))];
     const next = new Map();
     for (const url of runtimeUrls) {
         const prev = runtimeEntries.get(url);
-        const err = validateHttpProxyUrl(url);
+        const err = validateHttpProxyUrl(url, { allowDirect: true });
         next.set(url, {
             url,
             valid: !err,
@@ -146,6 +156,7 @@ function selectVisionProxy(exclude = []) {
 
 function toSelection(url, source) {
     if (!url) return { source: 'direct' };
+    if (isDirectProxyPoolUrl(url)) return { source, url: 'direct' };
     if (mockConfig.proxyPool.freshConnectionPerRequest) {
         const agent = { id: randomId(), closed: false };
         return {
@@ -228,6 +239,10 @@ await test('支持 https 代理地址', () => {
     assertEqual(validateHttpProxyUrl('https://proxy.example.com:443'), undefined);
 });
 
+await test('代理池支持 direct 直连节点', () => {
+    assertEqual(validateHttpProxyUrl('direct', { allowDirect: true }), undefined);
+});
+
 await test('拒绝 socks5 代理地址', () => {
     assertEqual(validateHttpProxyUrl('socks5://mihomo:10001'), 'unsupported');
 });
@@ -241,6 +256,17 @@ await test('代理池按 round robin 轮询', () => {
     assertEqual(selectCursorProxy().url, 'http://mihomo:10001');
     assertEqual(selectCursorProxy().url, 'http://mihomo:10002');
     assertEqual(selectCursorProxy().url, 'http://mihomo:10001');
+});
+
+await test('代理池可以在 direct 和代理之间轮询', () => {
+    resetState();
+    mockConfig.proxyPool.enabled = true;
+    mockConfig.proxyPool.urls = ['direct', 'http://mihomo:10001'];
+    const first = selectCursorProxy();
+    const second = selectCursorProxy();
+    assertEqual(first.url, 'direct');
+    assertEqual(first.dispatcher, undefined);
+    assertEqual(second.url, 'http://mihomo:10001');
 });
 
 await test('冷却中的代理会被跳过', () => {
@@ -315,6 +341,21 @@ await test('HTTP 429 会立即切换到下一个池节点重试一次', async ()
     assert(result.trace.proxyRotated, '应标记发生了代理切换');
     assertEqual(failureMarks[0].url, 'http://mihomo:10001');
     assert(failureMarks[0].rateLimited, '第一个代理应记录为 rate limited');
+});
+
+await test('direct 节点命中 429 后会切换到下一个代理节点', async () => {
+    resetState();
+    mockConfig.proxyPool.enabled = true;
+    mockConfig.proxyPool.urls = ['direct', 'http://mihomo:10001'];
+    const calls = [];
+    const result = await fetchWithProxyFailover('cursor', async (selection) => {
+        calls.push(selection.url);
+        if (selection.url === 'direct') return { status: 429 };
+        return { status: 200 };
+    });
+    assertEqual(calls, ['direct', 'http://mihomo:10001']);
+    assertEqual(result.selection.url, 'http://mihomo:10001');
+    assertEqual(failureMarks[0].url, 'direct');
 });
 
 await test('网络错误会切到下一个池节点', async () => {

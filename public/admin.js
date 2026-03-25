@@ -10,7 +10,7 @@ const CONFIG_GROUPS=[
   ]},
   {id:'proxy-pool',title:'代理池',fields:[
     {path:'proxy_pool.enabled',label:'启用代理池',type:'checkbox',help:'启用后 Cursor 与 Vision 默认优先走池，单独的全局 proxy 仅作为兜底。'},
-    {path:'proxy_pool.urls',label:'代理 URL 列表',type:'list',help:'每行一个 http:// 或 https:// 代理地址。Mihomo 需使用 mixed/http 入口，不支持 socks5://。',mono:true,rows:8,full:true},
+    {path:'proxy_pool.urls',label:'代理 URL 列表',type:'list',help:'每行一个 http:// / https:// 代理地址，或单独一行 direct 表示服务器直连。Mihomo 需使用 mixed/http 入口，不支持 socks5://。',mono:true,rows:8,full:true},
     {path:'proxy_pool.cooldown_seconds',label:'冷却秒数',type:'number',help:'429 或网络错误后，该代理会进入冷却窗口。',min:1},
     {path:'proxy_pool.fresh_connection_per_request',label:'每请求新建代理连接',type:'checkbox',help:'启用后，cursor2api -> 代理（如 Mihomo）的每次上游 HTTP 尝试都会新建连接，不复用代理连接池。延迟会略升高。'},
     {path:'proxy_pool.health_check.enabled',label:'启用健康检查',type:'checkbox',help:'后台定时探测代理是否可连通。'},

@@ -16,6 +16,7 @@ import {
     markProxyPoolSuccess,
     getProxyPoolStatus,
     validateHttpProxyUrl,
+    isDirectProxyPoolUrl,
     formatProxyFailureReason,
 } from './proxy-pool.js';
 
@@ -62,6 +63,12 @@ function getCachedProxyAgent(url: string): ProxyAgent {
 
 function toSelection(url: string | undefined, source: ProxySource): ProxySelection {
     if (!url) return { source: 'direct' };
+    if (isDirectProxyPoolUrl(url)) {
+        return {
+            url: 'direct',
+            source,
+        };
+    }
     const validationError = validateHttpProxyUrl(url);
     if (validationError) {
         console.warn(`[Proxy] 跳过无效代理 ${url}: ${validationError}`);

@@ -14,6 +14,7 @@ interface RuntimeProxyEntry {
 }
 
 const HEALTHCHECK_TIMEOUT_MS = 5000;
+export const DIRECT_PROXY_POOL_ENTRY = 'direct';
 
 const runtimeEntries = new Map<string, RuntimeProxyEntry>();
 const healthDispatchers = new Map<string, ProxyAgent>();
@@ -25,7 +26,20 @@ let healthLoopRegistered = false;
 let healthCheckInFlight = false;
 let lastConfigSignature = '';
 
-export function validateHttpProxyUrl(url: string): string | undefined {
+export function isDirectProxyPoolUrl(url: string): boolean {
+    const normalized = url.trim().toLowerCase();
+    return normalized === DIRECT_PROXY_POOL_ENTRY || normalized === 'direct://' || normalized === '直连';
+}
+
+function normalizeProxyPoolUrl(url: string): string {
+    return isDirectProxyPoolUrl(url) ? DIRECT_PROXY_POOL_ENTRY : url.trim();
+}
+
+export function validateHttpProxyUrl(url: string, options?: { allowDirect?: boolean }): string | undefined {
+    if (options?.allowDirect && isDirectProxyPoolUrl(url)) {
+        return undefined;
+    }
+
     let parsed: URL;
     try {
         parsed = new URL(url);
@@ -45,7 +59,7 @@ export function validateHttpProxyUrl(url: string): string | undefined {
 }
 
 function normalizePoolUrls(urls: string[]): string[] {
-    return [...new Set(urls.map(url => url.trim()).filter(Boolean))];
+    return [...new Set(urls.map(normalizeProxyPoolUrl).filter(Boolean))];
 }
 
 function isInCooldown(entry: RuntimeProxyEntry): boolean {
@@ -66,7 +80,7 @@ function toStatus(entry: RuntimeProxyEntry): ProxyPoolStatus {
 }
 
 function createRuntimeEntry(url: string, previous?: RuntimeProxyEntry): RuntimeProxyEntry {
-    const validationError = validateHttpProxyUrl(url);
+    const validationError = validateHttpProxyUrl(url, { allowDirect: true });
     return {
         url,
         valid: !validationError,
@@ -182,14 +196,18 @@ async function runHealthChecks(): Promise<void> {
 
             const started = Date.now();
             try {
-                const response = await fetch(targetUrl, {
+                const fetchInit: Record<string, unknown> = {
                     method: 'GET',
-                    dispatcher: getHealthDispatcher(url),
                     signal: AbortSignal.timeout(HEALTHCHECK_TIMEOUT_MS),
                     headers: {
                         'User-Agent': 'cursor2api-proxy-pool/1.0',
                     },
-                } as any);
+                };
+                if (!isDirectProxyPoolUrl(url)) {
+                    fetchInit.dispatcher = getHealthDispatcher(url);
+                }
+
+                const response = await fetch(targetUrl, fetchInit as any);
 
                 entry.latencyMs = Date.now() - started;
                 entry.healthy = response.ok || response.status === 204;
