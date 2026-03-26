@@ -1203,15 +1203,25 @@ export function deduplicateContinuation(existing: string, continuation: string):
 }
 
 function buildContinuationRequest(cursorReq: CursorChatRequest, currentText: string): CursorChatRequest {
-    const anchorLength = Math.min(300, currentText.length);
+    const anchorLength = Math.min(500, currentText.length);
     const anchorText = currentText.slice(-anchorLength);
-    const continuationPrompt = `Your previous response was cut off mid-output. The last part of your output was:
-
-\`\`\`
-...${anchorText}
-\`\`\`
-
-Continue EXACTLY from where you stopped. DO NOT repeat any content already generated. DO NOT restart the response. Output ONLY the remaining content, starting immediately from the cut-off point.`;
+    const continuationPrompt = [
+        'Your previous response was cut off mid-output.',
+        'Here is the exact tail of your last assistant response:',
+        '',
+        '```text',
+        `...${anchorText}`,
+        '```',
+        '',
+        'Resume from the very next character after the tail above.',
+        'Rules:',
+        '1. Output only the missing continuation text.',
+        '2. Do not repeat, paraphrase, or restart any content that already appeared.',
+        '3. Do not restart the current sentence, paragraph, list item, heading, code fence, XML/HTML block, status panel, or image prompt block.',
+        '4. If you are about to repeat previously written content, skip forward to the first not-yet-written token instead.',
+        '5. Do not add commentary, explanations, acknowledgements, or quotation marks around the continuation.',
+        '6. If the response is already complete, output nothing.',
+    ].join('\n');
 
     return {
         ...cursorReq,

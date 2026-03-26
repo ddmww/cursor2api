@@ -108,7 +108,8 @@ await (async () => {
         assertEqual(fetchCalls[0].body.messages[0].parts[0].text, 'Write a long file.', '续写请求应保留原始用户消息');
         assertEqual(fetchCalls[0].body.messages[1].parts[0].text, initialResponse, '续写请求应附带完整截断响应，而不是只发尾部片段');
         assert(typeof fetchCalls[0].body?.messages?.at(-1)?.parts?.[0]?.text === 'string', '续写请求应包含 user 引导消息');
-        assert(fetchCalls[0].body.messages.at(-1).parts[0].text.includes('Continue EXACTLY from where you stopped'), '续写提示词应正确注入');
+        assert(fetchCalls[0].body.messages.at(-1).parts[0].text.includes('Resume from the very next character after the tail above'), '续写提示词应要求从精确断点继续');
+        assert(fetchCalls[0].body.messages.at(-1).parts[0].text.includes('Do not restart the current sentence, paragraph, list item, heading, code fence'), '续写提示词应禁止重开段落和代码块');
 
         const content = String(parsed.toolCalls[0].arguments.content || '');
         assert(content.startsWith('AAAA'), '应保留原始截断前缀');
