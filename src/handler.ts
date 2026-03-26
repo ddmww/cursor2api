@@ -635,18 +635,23 @@ function endsWithClosedCodeFence(text: string): boolean {
 }
 
 function endsWithClosingTag(text: string): boolean {
-    return /<\/[\p{L}\p{N}_:-]+>\s*$/u.test(text);
+    const trailingTag = parseTrailingTagSegment(text);
+    return Boolean(trailingTag?.isClosing);
 }
 
 function endsWithOpeningTag(text: string): boolean {
-    return /<[\p{L}\p{N}_:-]+(?:\s+[^<>]*)?>\s*$/u.test(text)
-        && !/<\/[\p{L}\p{N}_:-]+>\s*$/u.test(text)
-        && !/\/>\s*$/u.test(text);
+    const trailingTag = parseTrailingTagSegment(text);
+    return Boolean(trailingTag && !trailingTag.isClosing && !trailingTag.isSelfClosing);
 }
 
 function endsWithPartialTag(text: string): boolean {
-    return /<[\p{L}\p{N}_:-]+(?:\s+[^<>]*)?\s*$/u.test(text)
-        && !/>[\s]*$/u.test(text);
+    return (
+        /<[\p{L}\p{N}_:-]+(?:\s+[^<>]*)?\s*$/u.test(text)
+        && !/>[\s]*$/u.test(text)
+    ) || (
+        /<\/?\s*begin(?:\s+[^<>]*)?\s*$/iu.test(text)
+        && !/>[\s]*$/u.test(text)
+    );
 }
 
 function stripTrailingClosers(text: string): string {
@@ -812,22 +817,50 @@ function parseTagSegment(text: string, index: number): {
     if (end === -1) return null;
 
     const segment = text.slice(index, end + 1);
-    if (!PLAIN_TEXT_TAG_RE.test(segment)) return null;
+    if (PLAIN_TEXT_TAG_RE.test(segment)) {
+        const match = segment.match(/^<\s*(\/)?\s*([A-Za-z][\w:-]*)(?:\s+[^<>]*?)?\s*(\/)?>$/u);
+        if (!match) return null;
+        const name = match[2].toLowerCase();
+        return {
+            end: end + 1,
+            name,
+            isClosing: Boolean(match[1]),
+            isSelfClosing: Boolean(match[3]) || PLAIN_TEXT_VOID_TAGS.has(name),
+        };
+    }
 
-    const match = segment.match(/^<\s*(\/)?\s*([A-Za-z][\w:-]*)(?:\s+[^<>]*?)?\s*(\/)?>$/u);
-    if (!match) return null;
+    const structuralMatch = segment.match(/^<\s*(\/)?\s*([^<>]*\S[^<>]*)\s*>$/u);
+    if (!structuralMatch) return null;
 
-    const name = match[2].toLowerCase();
+    const normalized = structuralMatch[2].trim().replace(/\s+/g, ' ');
+    if (PLAIN_TEXT_TERMINATOR_RE.test(normalized)) return null;
+
+    const name = normalized.toLowerCase();
     return {
         end: end + 1,
-        name,
-        isClosing: Boolean(match[1]),
-        isSelfClosing: Boolean(match[3]) || PLAIN_TEXT_VOID_TAGS.has(name),
+        name: `block:${name}`,
+        isClosing: Boolean(structuralMatch[1]),
+        isSelfClosing: false,
     };
 }
 
 function skipTagSegment(text: string, index: number): number | null {
     return parseTagSegment(text, index)?.end ?? null;
+}
+
+function parseTrailingTagSegment(text: string): {
+    end: number;
+    name: string;
+    isClosing: boolean;
+    isSelfClosing: boolean;
+} | null {
+    const trimmed = text.trimEnd();
+    const lastOpen = trimmed.lastIndexOf('<');
+    if (lastOpen === -1) return null;
+
+    const parsed = parseTagSegment(trimmed, lastOpen);
+    if (!parsed) return null;
+    return parsed.end === trimmed.length ? parsed : null;
 }
 
 function skipGenericAngleBracket(text: string, index: number): number | null {

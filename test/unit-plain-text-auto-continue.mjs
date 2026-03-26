@@ -57,6 +57,8 @@ test('终止标点加闭合引号或括号时不续写', () => {
 
 test('闭合标签或闭合代码块结尾时不续写', () => {
     const tagText = `${'段落内容已经完整表达，最后以闭合标签结束。'.repeat(5)}</summary>`;
+    const beginBlockText = `${'段落内容已经完整表达，最后以结构块闭合标记结束。'.repeat(5)}</begin reply>`;
+    const customBlockText = `${'段落内容已经完整表达，最后以带空格和标点的自定义结构块结束。'.repeat(5)}</phase: alpha, beta>`;
     const codeFenceText = Array.from({ length: 4 }, () => [
         '```md',
         '# Title',
@@ -71,6 +73,8 @@ test('闭合标签或闭合代码块结尾时不续写', () => {
     ].join('\n')).join('\n\n');
 
     assertEqual(shouldAutoContinuePlainTextResponse(tagText), false, '闭合标签不应续写');
+    assertEqual(shouldAutoContinuePlainTextResponse(beginBlockText), false, '闭合 begin/end 结构块不应续写');
+    assertEqual(shouldAutoContinuePlainTextResponse(customBlockText), false, '闭合自定义结构块不应续写');
     assertEqual(shouldAutoContinuePlainTextResponse(codeFenceText), false, '闭合代码块不应续写');
     assertEqual(shouldAutoContinuePlainTextResponse(tildeFenceText), false, '闭合波浪线代码块不应续写');
 });
@@ -84,10 +88,16 @@ test('短回复即使没句号也不续写', () => {
 test('未闭合标签或明显未完成符号结尾时继续续写', () => {
     const tagText = `${'这里是一段较长的正文，用来验证未闭合标签仍然会触发纯文本续写逻辑。'.repeat(4)}<summary>`;
     const unmatchedStartTagText = `<image_prompt>${'这是一段足够长的提示词正文，用来验证起始标签完整但缺少闭合标签时也会触发续写。'.repeat(5)}整个画面充满了柔和的二次元光影细节。`;
+    const unmatchedBeginBlockText = `<begin reply>${'这是一段足够长的正文，用来验证 begin 结构块没有闭合时也会触发续写。'.repeat(5)}故事还停在了这里`;
+    const unmatchedCustomBlockText = `<phase: alpha, beta>${'这是一段足够长的正文，用来验证带空格和标点的自定义结构块没有闭合时也会触发续写。'.repeat(5)}故事仍停在这里`;
+    const partialBeginBlockText = `${'这是一段足够长的正文，用来验证 begin 结构块闭合标记如果只输出了一半也会触发续写。'.repeat(5)}</begin reply`;
     const punctuationText = `${'这是另一段足够长的说明文本，用来验证全角冒号结尾也会被视为未完成。'.repeat(4)}接下来需要注意的是：`;
 
     assertEqual(shouldAutoContinuePlainTextResponse(tagText), true, '未闭合标签应续写');
     assertEqual(shouldAutoContinuePlainTextResponse(unmatchedStartTagText), true, '缺少闭合标签的完整起始标签应续写');
+    assertEqual(shouldAutoContinuePlainTextResponse(unmatchedBeginBlockText), true, '缺少闭合 begin 结构块应续写');
+    assertEqual(shouldAutoContinuePlainTextResponse(unmatchedCustomBlockText), true, '缺少闭合自定义结构块应续写');
+    assertEqual(shouldAutoContinuePlainTextResponse(partialBeginBlockText), true, '未闭合 begin 结束标记应续写');
     assertEqual(shouldAutoContinuePlainTextResponse(punctuationText), true, '未完成符号结尾应续写');
 });
 
