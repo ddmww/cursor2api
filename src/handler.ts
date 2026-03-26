@@ -475,9 +475,7 @@ export function isTruncated(text: string): boolean {
     }
 
     // 无工具调用时的通用截断检测（纯文本响应）
-    // 代码块未闭合：只检测行首的代码块标记，避免 JSON 值中的反引号误判
-    const lineStartCodeBlocks = (trimmed.match(/^```/gm) || []).length;
-    if (lineStartCodeBlocks % 2 !== 0) return true;
+    if (hasUnclosedFencedCodeBlocks(trimmed)) return true;
 
     // XML/HTML 标签未闭合 (Cursor 有时在中途截断)
     const openTags = (trimmed.match(/^<[a-zA-Z]/gm) || []).length;
@@ -511,10 +509,49 @@ const LARGE_PAYLOAD_ARG_FIELDS = new Set([
 ]);
 
 const INCOMPLETE_TAIL_SYMBOL_RE = /(?:[,:\[{(]|[，：［【（｛])\s*$/u;
-const PLAIN_TEXT_TERMINATOR_RE = /(?:\.{3}|[.!?;。！？；…])(?:["'”’)\]）】}」』》]+)?$/u;
-const PLAIN_TEXT_TRAILING_CLOSERS_RE = /["'”’)\]）】}」』》]+$/u;
+const PLAIN_TEXT_TERMINATOR_RE = /(?:\.{3}|[.!?;。！？；…])(?:["'”’)\]）】}」』》〉〕］｝＞>｣﹂﹄]+)?$/u;
+const PLAIN_TEXT_TRAILING_CLOSERS_RE = /["'”’)\]）】}」』》〉〕］｝＞>｣﹂﹄]+$/u;
 const PLAIN_TEXT_FINAL_CHAR_RE = /[\p{L}\p{N}_%/\\-]$/u;
 const PLAIN_TEXT_MIN_CONTINUE_CHARS = 120;
+const PLAIN_TEXT_DELIMITER_PAIRS = new Map<string, string>([
+    ['“', '”'],
+    ['‘', '’'],
+    ['「', '」'],
+    ['『', '』'],
+    ['《', '》'],
+    ['〈', '〉'],
+    ['〔', '〕'],
+    ['［', '］'],
+    ['｛', '｝'],
+    ['＜', '＞'],
+    ['｢', '｣'],
+    ['﹁', '﹂'],
+    ['﹃', '﹄'],
+    ['(', ')'],
+    ['[', ']'],
+    ['{', '}'],
+    ['（', '）'],
+    ['【', '】'],
+]);
+const PLAIN_TEXT_DELIMITER_CLOSERS = new Set(PLAIN_TEXT_DELIMITER_PAIRS.values());
+const PLAIN_TEXT_TAG_RE = /^<\/?[A-Za-z][\w:-]*(?:\s+[^<>]*?)?\s*\/?>$/u;
+const PLAIN_TEXT_GENERIC_INNER_RE = /^(?:[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?)(?:\s*,\s*(?:[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?))*$/u;
+const PLAIN_TEXT_VOID_TAGS = new Set([
+    'area',
+    'base',
+    'br',
+    'col',
+    'embed',
+    'hr',
+    'img',
+    'input',
+    'link',
+    'meta',
+    'param',
+    'source',
+    'track',
+    'wbr',
+]);
 
 function toolCallNeedsMoreContinuation(toolCall: ParsedToolCall): boolean {
     if (LARGE_PAYLOAD_TOOL_NAMES.has(toolCall.name.toLowerCase())) {
@@ -545,8 +582,7 @@ function payloadLooksSemanticallyIncomplete(payload: string): boolean {
     const trimmed = payload.trimEnd();
     if (trimmed.length < 1200) return false;
 
-    const lineStartCodeBlocks = (trimmed.match(/^```/gm) || []).length;
-    if (lineStartCodeBlocks % 2 !== 0) return true;
+    if (hasUnclosedFencedCodeBlocks(trimmed)) return true;
 
     const lines = trimmed.split('\n');
     const lastNonEmptyLine = [...lines].reverse().find(line => line.trim().length > 0)?.trim();
@@ -574,7 +610,7 @@ function getLastNonEmptyLine(text: string): string {
 }
 
 function endsWithClosedCodeFence(text: string): boolean {
-    return /```(?:\s*)$/u.test(text);
+    return /(?:```+|~~~+)(?:\s*)$/u.test(text);
 }
 
 function endsWithClosingTag(text: string): boolean {
@@ -596,6 +632,363 @@ function stripTrailingClosers(text: string): string {
     return text.replace(PLAIN_TEXT_TRAILING_CLOSERS_RE, '');
 }
 
+function isEscapedCharacter(text: string, index: number): boolean {
+    let backslashCount = 0;
+    for (let i = index - 1; i >= 0 && text[i] === '\\'; i--) {
+        backslashCount++;
+    }
+    return backslashCount % 2 === 1;
+}
+
+function isWordishChar(char: string): boolean {
+    return /[\p{L}\p{N}_$]/u.test(char);
+}
+
+function previousNonWhitespaceChar(text: string, index: number): string {
+    for (let i = index; i >= 0; i--) {
+        if (!/\s/u.test(text[i])) return text[i];
+    }
+    return '';
+}
+
+function nextNonWhitespaceChar(text: string, index: number): string {
+    for (let i = index; i < text.length; i++) {
+        if (!/\s/u.test(text[i])) return text[i];
+    }
+    return '';
+}
+
+function isInnerWordApostrophe(text: string, index: number): boolean {
+    if (text[index] !== '\'') return false;
+    return isWordishChar(text[index - 1] || '') && isWordishChar(text[index + 1] || '');
+}
+
+function getFenceMarkerAt(text: string, index: number): string | null {
+    if (index > 0 && text[index - 1] !== '\n') return null;
+    const char = text[index];
+    if (char !== '`' && char !== '~') return null;
+
+    let end = index;
+    while (end < text.length && text[end] === char) {
+        end++;
+    }
+
+    return end - index >= 3 ? text.slice(index, end) : null;
+}
+
+function skipFencedCodeBlock(text: string, index: number): { end: number; closed: boolean } | null {
+    const marker = getFenceMarkerAt(text, index);
+    if (!marker) return null;
+
+    const fenceChar = marker[0];
+    const fenceLength = marker.length;
+
+    const openLineEnd = text.indexOf('\n', index);
+    if (openLineEnd === -1) return { end: text.length, closed: false };
+
+    let searchFrom = openLineEnd + 1;
+    while (searchFrom < text.length) {
+        const lineEnd = text.indexOf('\n', searchFrom);
+        const line = lineEnd === -1 ? text.slice(searchFrom) : text.slice(searchFrom, lineEnd);
+
+        let runLength = 0;
+        while (runLength < line.length && line[runLength] === fenceChar) {
+            runLength++;
+        }
+
+        if (runLength >= fenceLength) {
+            return {
+                end: lineEnd === -1 ? text.length : lineEnd + 1,
+                closed: true,
+            };
+        }
+
+        if (lineEnd === -1) break;
+        searchFrom = lineEnd + 1;
+    }
+
+    return { end: text.length, closed: false };
+}
+
+function skipPlainTextMarkupBlock(text: string, index: number): { end: number; closed: boolean } | null {
+    if (text.startsWith('<!--', index)) {
+        const end = text.indexOf('-->', index + 4);
+        return {
+            end: end === -1 ? text.length : end + 3,
+            closed: end !== -1,
+        };
+    }
+
+    if (text.startsWith('<![CDATA[', index)) {
+        const end = text.indexOf(']]>', index + 9);
+        return {
+            end: end === -1 ? text.length : end + 3,
+            closed: end !== -1,
+        };
+    }
+
+    if (text.startsWith('<?', index)) {
+        const end = text.indexOf('?>', index + 2);
+        return {
+            end: end === -1 ? text.length : end + 2,
+            closed: end !== -1,
+        };
+    }
+
+    return null;
+}
+
+function hasUnclosedPlainTextMarkup(text: string): boolean {
+    for (let i = 0; i < text.length; i++) {
+        const fence = skipFencedCodeBlock(text, i);
+        if (fence !== null) {
+            i = Math.max(i, fence.end - 1);
+            continue;
+        }
+
+        const markup = skipPlainTextMarkupBlock(text, i);
+        if (markup !== null) {
+            if (!markup.closed) return true;
+            i = Math.max(i, markup.end - 1);
+        }
+    }
+
+    return false;
+}
+
+function hasUnclosedFencedCodeBlocks(text: string): boolean {
+    for (let i = 0; i < text.length; i++) {
+        const fence = skipFencedCodeBlock(text, i);
+        if (fence !== null) {
+            if (!fence.closed) return true;
+            i = Math.max(i, fence.end - 1);
+        }
+    }
+
+    return false;
+}
+
+function hasIncompletePlainTextMarkdownStructure(text: string): boolean {
+    const lastNonEmptyLine = getLastNonEmptyLine(text);
+    if (!lastNonEmptyLine) return false;
+
+    if (lastNonEmptyLine === '|') return true;
+    if (lastNonEmptyLine.startsWith('|') && (lastNonEmptyLine.match(/\|/g) || []).length < 3) return true;
+    if (/^(?:[-*+]\s*|\d+\.\s*|>\s*|-\s\[[ xX]?\]\s*)$/.test(lastNonEmptyLine)) return true;
+    if (/^\|?(?:\s*:?-{1,}\:?\s*\|){1,}\s*:?-{0,}\:?\s*$/.test(lastNonEmptyLine)) return true;
+
+    return false;
+}
+
+function parseTagSegment(text: string, index: number): {
+    end: number;
+    name: string;
+    isClosing: boolean;
+    isSelfClosing: boolean;
+} | null {
+    if (text[index] !== '<') return null;
+    const end = text.indexOf('>', index + 1);
+    if (end === -1) return null;
+
+    const segment = text.slice(index, end + 1);
+    if (!PLAIN_TEXT_TAG_RE.test(segment)) return null;
+
+    const match = segment.match(/^<\s*(\/)?\s*([A-Za-z][\w:-]*)(?:\s+[^<>]*?)?\s*(\/)?>$/u);
+    if (!match) return null;
+
+    const name = match[2].toLowerCase();
+    return {
+        end: end + 1,
+        name,
+        isClosing: Boolean(match[1]),
+        isSelfClosing: Boolean(match[3]) || PLAIN_TEXT_VOID_TAGS.has(name),
+    };
+}
+
+function skipTagSegment(text: string, index: number): number | null {
+    return parseTagSegment(text, index)?.end ?? null;
+}
+
+function skipGenericAngleBracket(text: string, index: number): number | null {
+    if (text[index] !== '<') return null;
+    const prevChar = text[index - 1] || '';
+    if (!/[A-Za-z0-9_$.\]]/.test(prevChar)) return null;
+
+    const end = text.indexOf('>', index + 1);
+    if (end === -1 || end - index > 120) return null;
+
+    const inner = text.slice(index + 1, end).trim();
+    if (!inner || !PLAIN_TEXT_GENERIC_INNER_RE.test(inner)) return null;
+    return end + 1;
+}
+
+function isLikelyGenericOpen(text: string, index: number): boolean {
+    if (text[index] !== '<') return false;
+    const prevChar = text[index - 1] || '';
+    if (!/[A-Za-z0-9_$.\]]/.test(prevChar)) return false;
+
+    const tail = text.slice(index + 1).trim();
+    if (!tail) return true;
+    return PLAIN_TEXT_GENERIC_INNER_RE.test(tail);
+}
+
+function isLikelyComparisonAngleBracket(text: string, index: number): boolean {
+    const char = text[index];
+    if (char !== '<' && char !== '>') return false;
+
+    const prevChar = text[index - 1] || '';
+    const nextChar = text[index + 1] || '';
+    if (prevChar === '=' || nextChar === '=') return true;
+
+    const hasWhitespaceAdjacent = /\s/u.test(prevChar) || /\s/u.test(nextChar);
+    if (!hasWhitespaceAdjacent) return false;
+
+    const prevToken = previousNonWhitespaceChar(text, index - 1);
+    const nextToken = nextNonWhitespaceChar(text, index + 1);
+    return Boolean(prevToken && nextToken && isWordishChar(prevToken) && isWordishChar(nextToken));
+}
+
+function hasUnclosedPlainTextDelimiters(text: string): boolean {
+    const stack: string[] = [];
+    let asciiDoubleQuoteOpen = false;
+    let asciiSingleQuoteOpen = false;
+    const inlineCodeRuns: number[] = [];
+
+    for (let i = 0; i < text.length; i++) {
+        const fence = skipFencedCodeBlock(text, i);
+        if (fence !== null) {
+            i = Math.max(i, fence.end - 1);
+            continue;
+        }
+
+        const markup = skipPlainTextMarkupBlock(text, i);
+        if (markup !== null) {
+            i = Math.max(i, markup.end - 1);
+            continue;
+        }
+
+        const char = text[i];
+
+        if (char === '`' && !isEscapedCharacter(text, i)) {
+            let runLength = 1;
+            while (text[i + runLength] === '`') {
+                runLength++;
+            }
+
+            if (runLength < 3) {
+                if (inlineCodeRuns[inlineCodeRuns.length - 1] === runLength) {
+                    inlineCodeRuns.pop();
+                } else {
+                    inlineCodeRuns.push(runLength);
+                }
+                i += runLength - 1;
+                continue;
+            }
+        }
+
+        if (char === '<') {
+            const tagEnd = skipTagSegment(text, i);
+            if (tagEnd !== null) {
+                i = tagEnd - 1;
+                continue;
+            }
+
+            const genericEnd = skipGenericAngleBracket(text, i);
+            if (genericEnd !== null) {
+                i = genericEnd - 1;
+                continue;
+            }
+
+            if (isLikelyComparisonAngleBracket(text, i) || isLikelyGenericOpen(text, i)) {
+                continue;
+            }
+
+            stack.push('>');
+            continue;
+        }
+
+        if (char === '>') {
+            if (isLikelyComparisonAngleBracket(text, i)) continue;
+            if (stack[stack.length - 1] === '>') {
+                stack.pop();
+            }
+            continue;
+        }
+
+        if (char === '"' && !isEscapedCharacter(text, i)) {
+            asciiDoubleQuoteOpen = !asciiDoubleQuoteOpen;
+            continue;
+        }
+
+        if (char === '\'' && !isEscapedCharacter(text, i) && !isInnerWordApostrophe(text, i)) {
+            asciiSingleQuoteOpen = !asciiSingleQuoteOpen;
+            continue;
+        }
+
+        const expectedCloser = PLAIN_TEXT_DELIMITER_PAIRS.get(char);
+        if (expectedCloser) {
+            stack.push(expectedCloser);
+            continue;
+        }
+
+        if (PLAIN_TEXT_DELIMITER_CLOSERS.has(char)) {
+            if (stack[stack.length - 1] === char) {
+                stack.pop();
+            }
+        }
+    }
+
+    return asciiDoubleQuoteOpen || asciiSingleQuoteOpen || inlineCodeRuns.length > 0 || stack.length > 0;
+}
+
+function hasUnclosedPlainTextTags(text: string): boolean {
+    const tagStack: string[] = [];
+
+    for (let i = 0; i < text.length; i++) {
+        const fence = skipFencedCodeBlock(text, i);
+        if (fence !== null) {
+            i = Math.max(i, fence.end - 1);
+            continue;
+        }
+
+        const markup = skipPlainTextMarkupBlock(text, i);
+        if (markup !== null) {
+            i = Math.max(i, markup.end - 1);
+            continue;
+        }
+
+        if (text[i] === '<') {
+            const genericEnd = skipGenericAngleBracket(text, i);
+            if (genericEnd !== null) {
+                i = genericEnd - 1;
+                continue;
+            }
+
+            if (isLikelyComparisonAngleBracket(text, i) || isLikelyGenericOpen(text, i)) {
+                continue;
+            }
+        }
+
+        const tag = parseTagSegment(text, i);
+        if (!tag) continue;
+
+        i = tag.end - 1;
+        if (tag.isSelfClosing) continue;
+
+        if (tag.isClosing) {
+            const lastMatchIndex = tagStack.lastIndexOf(tag.name);
+            if (lastMatchIndex !== -1) {
+                tagStack.splice(lastMatchIndex, 1);
+            }
+            continue;
+        }
+
+        tagStack.push(tag.name);
+    }
+
+    return tagStack.length > 0;
+}
+
 export function shouldAutoContinuePlainTextResponse(text: string): boolean {
     const trimmed = text.trimEnd();
     if (!trimmed) return false;
@@ -604,8 +997,14 @@ export function shouldAutoContinuePlainTextResponse(text: string): boolean {
 
     const lastNonEmptyLine = getLastNonEmptyLine(trimmed);
     if (!lastNonEmptyLine) return false;
-    if (endsWithClosedCodeFence(trimmed) || endsWithClosingTag(trimmed)) return false;
+    if (hasUnclosedFencedCodeBlocks(trimmed)) return true;
+    if (hasUnclosedPlainTextMarkup(trimmed)) return true;
+    if (hasUnclosedPlainTextTags(trimmed)) return true;
     if (endsWithOpeningTag(trimmed) || endsWithPartialTag(trimmed)) return true;
+    if (hasUnclosedPlainTextDelimiters(trimmed)) return true;
+    if (hasIncompletePlainTextMarkdownStructure(trimmed)) return true;
+    if (endsWithClosedCodeFence(trimmed)) return false;
+    if (endsWithClosingTag(trimmed)) return false;
     if (PLAIN_TEXT_TERMINATOR_RE.test(lastNonEmptyLine)) return false;
     if (isTruncated(trimmed)) return true;
 
