@@ -9,6 +9,17 @@ applyThemeIcon();
 let reqs=[],rmap={},logs=[],selId=null,cFil='all',cLv='all',sq='',curTab='logs',curPayload=null,timeFil='all';
 const PC={receive:'var(--blue)',convert:'var(--cyan)',send:'var(--purple)',response:'var(--purple)',thinking:'#a855f7',refusal:'var(--yellow)',retry:'var(--yellow)',truncation:'var(--yellow)',continuation:'var(--yellow)',toolparse:'var(--orange)',sanitize:'var(--orange)',stream:'var(--green)',complete:'var(--green)',error:'var(--red)',intercept:'var(--pink)',auth:'var(--t3)'};
 
+async function loadPayload(id, keepExisting=false){
+  try{
+    const r=await fetch(authQ('/api/payload/'+id));
+    if(r.ok){
+      curPayload=await r.json();
+      return;
+    }
+  }catch{}
+  if(!keepExisting)curPayload=null;
+}
+
 // ===== Token Auth =====
 const urlToken = new URLSearchParams(window.location.search).get('token');
 if (urlToken) localStorage.setItem('cursor2api_token', urlToken);
@@ -49,12 +60,17 @@ function connectSSE(){
     if(logs.length>5000)logs=logs.slice(-3000);
     if(!selId||selId===en.requestId){if(curTab==='logs')appendLog(en)}
   });
-  es.addEventListener('summary',e=>{
+  es.addEventListener('summary',async e=>{
     const s=JSON.parse(e.data);rmap[s.requestId]=s;
     const i=reqs.findIndex(r=>r.requestId===s.requestId);
     if(i>=0)reqs[i]=s;else reqs.unshift(s);
     renderRL();updCnt();
-    if(selId===s.requestId)renderSCard(s);
+    if(selId===s.requestId){
+      renderSCard(s);
+      await loadPayload(s.requestId,true);
+      const tabEl=document.querySelector('.tab[data-tab="'+curTab+'"]');
+      if(tabEl)setTab(curTab,tabEl);
+    }
   });
   es.addEventListener('stats',e=>{applyStats(JSON.parse(e.data))});
   es.onopen=()=>{const c=document.getElementById('conn');c.className='conn on';c.querySelector('span').textContent='已连接'};
@@ -155,7 +171,7 @@ async function selReq(id){
   const tabEl=document.querySelector('.tab[data-tab="'+curTab+'"]');
   if(tabEl){setTab(curTab,tabEl)}else{setTab('logs',document.querySelector('.tab'))}
   // Load payload
-  try{const r=await fetch(authQ('/api/payload/'+id));if(r.ok)curPayload=await r.json();else curPayload=null}catch{curPayload=null}
+  await loadPayload(id);
   // Re-render current tab with new data
   const tabEl2=document.querySelector('.tab[data-tab="'+curTab+'"]');
   if(tabEl2)setTab(curTab,tabEl2);
@@ -301,6 +317,7 @@ function renderPromptsTab(tc){
 function renderResponseTab(tc){
   if(!curPayload){tc.innerHTML='<div class="empty"><div class="ic">📤</div><p>暂无响应数据</p></div>';return}
   let h='';
+  const fallbackAnswer=!curPayload.rawResponse&&!curPayload.finalResponse&&curPayload.answer?curPayload.answer:'';
   if(curPayload.thinkingContent){
     h+='<div class="content-section"><div class="cs-title">🧠 Thinking 内容 <span class="cnt">'+fmtN(curPayload.thinkingContent.length)+' chars</span></div>';
     h+='<div class="resp-box" style="border-color:var(--purple);max-height:300px">'+escH(curPayload.thinkingContent)+'<button class="copy-btn" onclick="copyText(curPayload.thinkingContent)">复制</button></div></div>';
@@ -312,6 +329,10 @@ function renderResponseTab(tc){
   if(curPayload.finalResponse&&curPayload.finalResponse!==curPayload.rawResponse){
     h+='<div class="content-section"><div class="cs-title">✅ 最终响应（处理后）<span class="cnt">'+fmtN(curPayload.finalResponse.length)+' chars</span></div>';
     h+='<div class="resp-box diff" style="max-height:400px">'+escH(curPayload.finalResponse)+'<button class="copy-btn" onclick="copyText(curPayload.finalResponse)">复制</button></div></div>';
+  }
+  if(fallbackAnswer){
+    h+='<div class="content-section"><div class="cs-title">✅ 响应摘要 <span class="cnt">'+fmtN(fallbackAnswer.length)+' chars</span></div>';
+    h+='<div class="resp-box diff" style="max-height:400px">'+escH(fallbackAnswer)+'<button class="copy-btn" onclick="copyText(curPayload.answer)">复制</button></div></div>';
   }
   if(curPayload.toolCalls&&curPayload.toolCalls.length){
     h+='<div class="content-section"><div class="cs-title">🔧 工具调用结果 <span class="cnt">'+curPayload.toolCalls.length+' 个</span></div>';

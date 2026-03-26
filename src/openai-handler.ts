@@ -759,12 +759,20 @@ async function handleOpenAIIncrementalTextStream(
             (event) => {
                 finalCursorUsage = accumulateCursorUsage(finalCursorUsage, event);
             },
+            (continuation) => {
+                log.recordContinuationResponse(
+                    continuation.index,
+                    continuation.response,
+                    continuation.dedupedLength,
+                );
+            },
         );
         if (continueCount > 0) {
             const appendedRaw = continuedText.slice(finalVisibleText.length);
             log.warn('OpenAI', 'continuation', `纯文本响应检测到半句截断，隐式续写 ${continueCount} 次`);
             log.updateSummary({ continuationCount: continueCount });
             finalVisibleText = continuedText;
+            finalRawResponse += appendedRaw;
             finalTextToSend += sanitizeResponse(appendedRaw);
         }
     }
@@ -1034,6 +1042,9 @@ async function handleOpenAIStream(
                 (event) => {
                     cursorUsage = accumulateCursorUsage(cursorUsage, event);
                 },
+                (item) => {
+                    log.recordContinuationResponse(item.index, item.response, item.dedupedLength);
+                },
             );
             fullResponse = continuation.fullText;
             if (continuation.continueCount > 0) {
@@ -1281,6 +1292,9 @@ async function handleOpenAINonStream(
             (event) => {
                 cursorUsage = accumulateCursorUsage(cursorUsage, event);
             },
+            (item) => {
+                log.recordContinuationResponse(item.index, item.response, item.dedupedLength);
+            },
         );
         fullText = continuation.fullText;
         if (continuation.continueCount > 0) {
@@ -1293,6 +1307,9 @@ async function handleOpenAINonStream(
             (text) => shouldAutoContinueResponse(text, false, plainTextAutoContinue),
             (event) => {
                 cursorUsage = accumulateCursorUsage(cursorUsage, event);
+            },
+            (item) => {
+                log.recordContinuationResponse(item.index, item.response, item.dedupedLength);
             },
         );
         fullText = continuation.fullText;
@@ -1739,6 +1756,9 @@ async function handleResponsesStream(
                 (event) => {
                     cursorUsage = accumulateCursorUsage(cursorUsage, event);
                 },
+                (item) => {
+                    log.recordContinuationResponse(item.index, item.response, item.dedupedLength);
+                },
             );
             fullResponse = continuation.fullText;
             if (continuation.continueCount > 0) {
@@ -1751,6 +1771,9 @@ async function handleResponsesStream(
                 (text) => shouldAutoContinueResponse(text, false, plainTextAutoContinue),
                 (event) => {
                     cursorUsage = accumulateCursorUsage(cursorUsage, event);
+                },
+                (item) => {
+                    log.recordContinuationResponse(item.index, item.response, item.dedupedLength);
                 },
             );
             fullResponse = continuation.fullText;
@@ -1988,6 +2011,9 @@ async function handleResponsesNonStream(
             (event) => {
                 cursorUsage = accumulateCursorUsage(cursorUsage, event);
             },
+            (item) => {
+                log.recordContinuationResponse(item.index, item.response, item.dedupedLength);
+            },
         );
         fullText = continuation.fullText;
         if (continuation.continueCount > 0) {
@@ -2000,6 +2026,9 @@ async function handleResponsesNonStream(
             (text) => shouldAutoContinueResponse(text, false, plainTextAutoContinue),
             (event) => {
                 cursorUsage = accumulateCursorUsage(cursorUsage, event);
+            },
+            (item) => {
+                log.recordContinuationResponse(item.index, item.response, item.dedupedLength);
             },
         );
         fullText = continuation.fullText;

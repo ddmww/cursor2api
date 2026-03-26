@@ -140,11 +140,21 @@ test('标签、泛型和比较表达式不应因为尖括号误触发续写', ()
     const genericText = `${'This is a sufficiently long explanation showing that generic syntax should not be treated as plain-text angle brackets. '.repeat(3)}Type examples like Promise<string> and Map<K, V> are already complete.`;
     const comparisonText = `${'This is another long explanation proving comparisons with spaces are not plain-text brackets. '.repeat(3)}The final formula a < b is only an example, not a truncation.`;
     const cjkClosedText = `${'这是一段足够长的说明，用来验证新增的中文闭合配对符号不会导致误判。'.repeat(4)}最后她把标题写成了〈已经结束。〉`;
+    const emoticonText = `${'这是一段足够长的说明，用来验证颜文字中的尖括号不会触发续写。'.repeat(12)}她只是小声嘟囔了一句 ( > ρ < )，然后认真把故事收在了这里。`;
 
     assertEqual(shouldAutoContinuePlainTextResponse(tagText), false, '完整标签不应触发续写');
     assertEqual(shouldAutoContinuePlainTextResponse(genericText), false, '泛型尖括号不应触发续写');
     assertEqual(shouldAutoContinuePlainTextResponse(comparisonText), false, '比较表达式不应触发续写');
     assertEqual(shouldAutoContinuePlainTextResponse(cjkClosedText), false, '闭合中文尖括号不应触发续写');
+    assertEqual(shouldAutoContinuePlainTextResponse(emoticonText), false, '颜文字尖括号不应触发续写');
+});
+
+test('较早位置的未闭合结构不应影响已完整结尾', () => {
+    const earlyTagText = `<content>${'这是一段很长的正文，用来验证早前出现的结构片段不应单独触发续写。'.repeat(20)}最终这一段已经完整结束。`;
+    const earlyQuoteText = `"${'这是一段很长的正文，用来验证较早出现的未闭合引号不应影响末尾已经收口的结果。'.repeat(20)}最后这一句已经平稳落下。`;
+
+    assertEqual(shouldAutoContinuePlainTextResponse(earlyTagText), false, '较早位置的未闭合标签不应单独触发续写');
+    assertEqual(shouldAutoContinuePlainTextResponse(earlyQuoteText), false, '较早位置的未闭合引号不应单独触发续写');
 });
 
 test('未闭合 HTML 注释、CDATA 和处理指令会触发续写', () => {

@@ -513,6 +513,8 @@ const PLAIN_TEXT_TERMINATOR_RE = /(?:\.{3}|[.!?;。！？；…])(?:["'”’)\]
 const PLAIN_TEXT_TRAILING_CLOSERS_RE = /["'”’)\]）】}」』》〉〕］｝＞>｣﹂﹄]+$/u;
 const PLAIN_TEXT_FINAL_CHAR_RE = /[\p{L}\p{N}_%/\\-]$/u;
 const PLAIN_TEXT_MIN_CONTINUE_CHARS = 120;
+const PLAIN_TEXT_TAIL_SCAN_CHARS = 400;
+const PLAIN_TEXT_TAIL_SCAN_LINES = 6;
 const PLAIN_TEXT_DELIMITER_PAIRS = new Map<string, string>([
     ['“', '”'],
     ['‘', '’'],
@@ -607,6 +609,25 @@ function toolCallLooksSemanticallyIncomplete(toolCall: ParsedToolCall): boolean 
 
 function getLastNonEmptyLine(text: string): string {
     return text.split('\n').reverse().find(line => line.trim().length > 0)?.trim() || '';
+}
+
+function getPlainTextTailWindow(text: string): string {
+    if (text.length <= PLAIN_TEXT_TAIL_SCAN_CHARS) return text;
+
+    let newlineCount = 0;
+    let lineStart = 0;
+    for (let i = text.length - 1; i >= 0; i--) {
+        if (text[i] === '\n') {
+            newlineCount++;
+            if (newlineCount >= PLAIN_TEXT_TAIL_SCAN_LINES) {
+                lineStart = i + 1;
+                break;
+            }
+        }
+    }
+
+    const charStart = Math.max(0, text.length - PLAIN_TEXT_TAIL_SCAN_CHARS);
+    return text.slice(Math.max(charStart, lineStart));
 }
 
 function endsWithClosedCodeFence(text: string): boolean {
@@ -848,6 +869,25 @@ function isLikelyComparisonAngleBracket(text: string, index: number): boolean {
     return Boolean(prevToken && nextToken && isWordishChar(prevToken) && isWordishChar(nextToken));
 }
 
+function isLikelyDecorativeAngleBracket(text: string, index: number): boolean {
+    const char = text[index];
+    if (char !== '<' && char !== '>') return false;
+
+    const prevChar = text[index - 1] || '';
+    const nextChar = text[index + 1] || '';
+    if (/\s/u.test(prevChar) && /\s/u.test(nextChar)) return true;
+
+    const prevToken = previousNonWhitespaceChar(text, index - 1);
+    const nextToken = nextNonWhitespaceChar(text, index + 1);
+    const emoticonBoundaryChars = new Set(['(', ')', '（', '）', '[', ']', '【', '】', '{', '}', '｛', '｝', '/', '\\', '|']);
+
+    if ((prevToken && emoticonBoundaryChars.has(prevToken)) || (nextToken && emoticonBoundaryChars.has(nextToken))) {
+        if (!isWordishChar(prevToken) || !isWordishChar(nextToken)) return true;
+    }
+
+    return false;
+}
+
 function hasUnclosedPlainTextDelimiters(text: string): boolean {
     const stack: string[] = [];
     let asciiDoubleQuoteOpen = false;
@@ -899,6 +939,7 @@ function hasUnclosedPlainTextDelimiters(text: string): boolean {
                 continue;
             }
 
+            if (isLikelyDecorativeAngleBracket(text, i)) continue;
             if (isLikelyComparisonAngleBracket(text, i) || isLikelyGenericOpen(text, i)) {
                 continue;
             }
@@ -908,6 +949,7 @@ function hasUnclosedPlainTextDelimiters(text: string): boolean {
         }
 
         if (char === '>') {
+            if (isLikelyDecorativeAngleBracket(text, i)) continue;
             if (isLikelyComparisonAngleBracket(text, i)) continue;
             if (stack[stack.length - 1] === '>') {
                 stack.pop();
@@ -995,16 +1037,19 @@ export function shouldAutoContinuePlainTextResponse(text: string): boolean {
     if (trimmed.length < PLAIN_TEXT_MIN_CONTINUE_CHARS) return false;
     if (hasToolCalls(trimmed)) return false;
 
-    const lastNonEmptyLine = getLastNonEmptyLine(trimmed);
-    if (!lastNonEmptyLine) return false;
-    if (hasUnclosedFencedCodeBlocks(trimmed)) return true;
-    if (hasUnclosedPlainTextMarkup(trimmed)) return true;
-    if (hasUnclosedPlainTextTags(trimmed)) return true;
-    if (endsWithOpeningTag(trimmed) || endsWithPartialTag(trimmed)) return true;
-    if (hasUnclosedPlainTextDelimiters(trimmed)) return true;
-    if (hasIncompletePlainTextMarkdownStructure(trimmed)) return true;
     if (endsWithClosedCodeFence(trimmed)) return false;
     if (endsWithClosingTag(trimmed)) return false;
+
+    const tailWindow = getPlainTextTailWindow(trimmed);
+    const lastNonEmptyLine = getLastNonEmptyLine(trimmed);
+    if (!lastNonEmptyLine) return false;
+
+    if (hasUnclosedFencedCodeBlocks(tailWindow)) return true;
+    if (hasUnclosedPlainTextMarkup(tailWindow)) return true;
+    if (hasUnclosedPlainTextTags(tailWindow)) return true;
+    if (endsWithOpeningTag(trimmed) || endsWithPartialTag(trimmed)) return true;
+    if (hasUnclosedPlainTextDelimiters(tailWindow)) return true;
+    if (hasIncompletePlainTextMarkdownStructure(tailWindow)) return true;
     if (PLAIN_TEXT_TERMINATOR_RE.test(lastNonEmptyLine)) return false;
     if (isTruncated(trimmed)) return true;
 
@@ -1158,6 +1203,7 @@ export async function autoContinueCursorResponseStream(
     initialResponse: string,
     shouldContinue: (text: string) => boolean,
     onEvent?: (event: CursorSSEEvent) => void,
+    onContinuation?: (continuation: { index: number; response: string; dedupedLength: number }) => void,
 ): Promise<{ fullText: string; continueCount: number }> {
     let fullResponse = initialResponse;
     const MAX_AUTO_CONTINUE = Math.max(0, getConfig().maxAutoContinue);
@@ -1180,6 +1226,11 @@ export async function autoContinueCursorResponseStream(
 
         const deduped = deduplicateContinuation(fullResponse, continuationResponse);
         fullResponse += deduped;
+        onContinuation?.({
+            index: continueCount,
+            response: continuationResponse,
+            dedupedLength: deduped.length,
+        });
 
         if (deduped.trim().length === 0) break;
         if (deduped.trim().length < 100) break;
@@ -1200,6 +1251,7 @@ export async function autoContinueCursorResponseFull(
     initialText: string,
     shouldContinue: (text: string) => boolean,
     onEvent?: (event: CursorSSEEvent) => void,
+    onContinuation?: (continuation: { index: number; response: string; dedupedLength: number }) => void,
 ): Promise<{ fullText: string; continueCount: number }> {
     let fullText = initialText;
     const MAX_AUTO_CONTINUE = Math.max(0, getConfig().maxAutoContinue);
@@ -1214,6 +1266,11 @@ export async function autoContinueCursorResponseFull(
 
         const deduped = deduplicateContinuation(fullText, continuationResponse);
         fullText += deduped;
+        onContinuation?.({
+            index: continueCount,
+            response: continuationResponse,
+            dedupedLength: deduped.length,
+        });
 
         if (deduped.trim().length === 0) break;
         if (deduped.trim().length < 100) break;
@@ -1584,12 +1641,20 @@ async function handleDirectTextStream(
             (event) => {
                 finalCursorUsage = accumulateCursorUsage(finalCursorUsage, event);
             },
+            (continuation) => {
+                log.recordContinuationResponse(
+                    continuation.index,
+                    continuation.response,
+                    continuation.dedupedLength,
+                );
+            },
         );
         if (continueCount > 0) {
             const appendedRaw = continuedText.slice(finalVisibleText.length);
             log.warn('Handler', 'continuation', `纯文本响应检测到半句截断，隐式续写 ${continueCount} 次`);
             log.updateSummary({ continuationCount: continueCount });
             finalVisibleText = continuedText;
+            finalRawResponse += appendedRaw;
             finalTextToSend += sanitizeResponse(appendedRaw);
         }
     }
