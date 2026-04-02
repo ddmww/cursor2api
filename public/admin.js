@@ -17,6 +17,16 @@ const CONFIG_GROUPS=[
     {path:'proxy_pool.health_check.interval_seconds',label:'健康检查间隔（秒）',type:'number',help:'默认 60 秒。',min:1},
     {path:'proxy_pool.health_check.url',label:'健康检查地址',type:'text',help:'只用于探测连通性，不代表 Cursor 配额。',mono:true,placeholder:'http://cp.cloudflare.com/generate_204'}
   ]},
+  {id:'flaresolverr',title:'FlareSolverr',fields:[
+    {path:'flaresolverr.enabled',label:'启用浏览器校验刷新',type:'checkbox',help:'通过 FlareSolverr 定时访问 cursor.com/docs，获取整组 cookies 和真实 UA。关闭后仍可使用下面手填的 cookie / UA / browser。'},
+    {path:'flaresolverr.url',label:'FlareSolverr 地址',type:'text',help:'例如 http://127.0.0.1:8191。',mono:true,placeholder:'http://127.0.0.1:8191'},
+    {path:'flaresolverr.solve_url',label:'挑战页面地址',type:'text',help:'默认使用 https://cursor.com/docs。',mono:true,placeholder:'https://cursor.com/docs'},
+    {path:'flaresolverr.refresh_interval_seconds',label:'刷新间隔（秒）',type:'number',help:'默认 3000 秒。',min:1},
+    {path:'flaresolverr.timeout_seconds',label:'单次刷新超时（秒）',type:'number',help:'默认 60 秒。',min:1},
+    {path:'flaresolverr.cookie_header',label:'手填 Cookie Header',type:'textarea',help:'明文填写完整 Cookie header。自动刷新成功时会优先使用运行时值；没有运行时值时回退到这里。',mono:true,rows:6,full:true},
+    {path:'flaresolverr.user_agent',label:'手填 User-Agent',type:'textarea',help:'可手动指定用于上游请求的 User-Agent。自动刷新成功时会优先使用运行时值。',mono:true,rows:4,full:true},
+    {path:'flaresolverr.browser',label:'手填 Browser 标识',type:'text',help:'例如 chrome140 / edge134。为空时会尝试从手填 User-Agent 自动推导。',mono:true,placeholder:'chrome140'}
+  ]},
   {id:'security',title:'鉴权与安全',fields:[
     {path:'auth_tokens',label:'Auth Tokens',type:'list-secret',help:'每行一个 token。为空则 API 与后台开放。',mono:true,rows:4},
     {path:'sanitize_response',label:'响应内容清洗',type:'checkbox',help:'将响应中的 Cursor 身份引用替换为 Claude。'},
@@ -69,7 +79,7 @@ const CONFIG_GROUPS=[
 
 let dashboardTab=new URLSearchParams(window.location.search).get('tab');
 if(!ADMIN_TABS.includes(dashboardTab))dashboardTab='overview';
-let configData=null,configMeta=null,configErrors={},configDirty=false,saveState='clean',proxyPoolRuntime=null;
+let configData=null,configMeta=null,configErrors={},configDirty=false,saveState='clean',proxyPoolRuntime=null,flaresolverrRuntime=null,flaresolverrRefreshBusy=false;
 
 function adminToken(){return localStorage.getItem('cursor2api_token')||''}
 function adminUrl(tab){const p=new URLSearchParams(window.location.search);p.set('tab',tab);const t=adminToken();if(t)p.set('token',t);else p.delete('token');return '/admin?'+p.toString()}
@@ -112,6 +122,28 @@ function proxyPoolSummary(){
   return {total:entries.length,available,cooling,unhealthy};
 }
 
+function flaresolverrSummary(){
+  if(!flaresolverrRuntime)return {label:'未加载',detail:'等待状态接口'};
+  if(flaresolverrRuntime.valueSource==='config'&&!configData?.flaresolverr?.enabled){
+    return {label:'手填配置',detail:'自动刷新未启用，当前使用手填 cookie / UA'};
+  }
+  const statusMap={
+    disabled:'未启用',
+    idle:'待刷新',
+    refreshing:'刷新中',
+    ready:'已就绪',
+    stale:'已过期',
+    error:'错误'
+  };
+  if(flaresolverrRuntime.valueSource==='config'&&configData?.flaresolverr?.enabled){
+    return {label:'手填兜底',detail:'自动刷新值不可用，当前回退到手填 cookie / UA'};
+  }
+  return {
+    label:statusMap[flaresolverrRuntime.status]||String(flaresolverrRuntime.status||'未知'),
+    detail:flaresolverrRuntime.hasCookies?('cookies 已就绪 · '+(flaresolverrRuntime.valueSource==='runtime'?'运行时':'手填')+' · UA '+(flaresolverrRuntime.browser||'未知')):'尚未拿到 cookies'
+  };
+}
+
 function renderOverview(){
   renderOverviewCards();
   renderOverviewWarnings();
@@ -120,12 +152,14 @@ function renderOverview(){
 
 function renderOverviewCards(){
   const pool=proxyPoolSummary();
+  const flare=flaresolverrSummary();
   const cards=[
     ['当前模型',configData?.cursor_model||'-','运行时默认使用的模型。'],
     ['后台鉴权',configMeta?.authConfigured?'已启用 auth_tokens':'未启用 auth_tokens','未启用时公网风险较高。'],
     ['日志模式',configData?.logging?.file_enabled?('文件('+configData.logging.persist_mode+') → '+configData.logging.dir):'仅内存','控制台实时日志不受影响。'],
     ['配置文件',configMeta?.fileExists?'config.yaml':'首次保存会创建 config.yaml','后台只写 config.yaml。'],
     ['代理池',configData?.proxy_pool?.enabled?('已启用 · '+pool.available+'/'+pool.total+' 可用'):'未启用','支持轮询、健康检查和 429 冷却。'],
+    ['FlareSolverr',flare.label,flare.detail],
     ['ENV 覆盖',String(configMeta?.overriddenFields?.length||0),'这些字段保存后可能不会立刻改变运行值。'],
     ['最近请求',document.getElementById('sT').textContent||'0','使用顶部统计同步展示。'],
     ['平均耗时',(document.getElementById('sA').textContent||'-')+' ms','已完成请求的平均耗时。'],
@@ -138,6 +172,8 @@ function renderOverviewWarnings(){
   const el=document.getElementById('overviewWarnings');
   const warnings=(configMeta?.warnings||[]).slice();
   if(configMeta?.overriddenFields?.length)warnings.push('检测到 '+configMeta.overriddenFields.length+' 个字段被环境变量覆盖，后台保存的是文件值而非最终运行值。');
+  if(flaresolverrRuntime?.sharedProxyPoolWarning)warnings.push(flaresolverrRuntime.sharedProxyPoolWarning);
+  if(configData?.flaresolverr?.enabled&&flaresolverrRuntime?.lastError)warnings.push('FlareSolverr 最近错误：'+flaresolverrRuntime.lastError);
   el.innerHTML='<div class="warning-list">'+(warnings.length?warnings.map(w=>'<div class="warning-item">'+escAdmin(w)+'</div>').join(''):'<div class="warning-item">当前没有额外风险提示。</div>')+'</div>';
 }
 
@@ -167,6 +203,16 @@ async function loadProxyPoolStatus(){
   renderProxyPoolStatus();
 }
 
+async function loadFlareSolverrStatus(){
+  const resp=await fetch(adminAuthQ('/api/admin/flaresolverr/status'));
+  if(resp.status===401||resp.status===403){localStorage.removeItem('cursor2api_token');window.location.href=adminUrl(dashboardTab);return}
+  const payload=await readApiPayload(resp);
+  if(!resp.ok)throw new Error(payload.message||'FlareSolverr 状态接口返回错误。');
+  flaresolverrRuntime=payload;
+  renderOverview();
+  renderFlareSolverrStatus();
+}
+
 async function loadConfig(){
   const resp=await fetch(adminAuthQ('/api/admin/config'));
   if(resp.status===401||resp.status===403){localStorage.removeItem('cursor2api_token');window.location.href=adminUrl(dashboardTab);return}
@@ -175,20 +221,24 @@ async function loadConfig(){
   configData=payload.config;configMeta=payload.meta;configErrors={};
   renderAlerts();renderOverview();renderConfig();updateSaveState();
   await loadProxyPoolStatus();
+  await loadFlareSolverrStatus();
 }
 
 function renderConfig(){
   if(!configData||!configMeta)return;
   document.getElementById('configNav').innerHTML='<div class="config-nav-title">配置分组</div>'+CONFIG_GROUPS.map(group=>'<button class="config-link" data-group-link="'+group.id+'" onclick="scrollConfigGroup(\''+group.id+'\')">'+escAdmin(group.title)+'</button>').join('');
   const pool=proxyPoolSummary();
+  const flare=flaresolverrSummary();
   document.getElementById('configSummary').innerHTML=[
     ['配置文件',configMeta.fileExists?'config.yaml':'首次保存会创建 config.yaml'],
     ['鉴权状态',configMeta.authConfigured?'已启用 auth_tokens':'未启用 auth_tokens'],
     ['日志模式',configData.logging.file_enabled?('文件('+configData.logging.persist_mode+') → '+configData.logging.dir):'仅内存'],
     ['代理池状态',configData.proxy_pool.enabled?('已启用 · '+pool.available+'/'+pool.total+' 可用'):'未启用'],
+    ['FlareSolverr',flare.label],
     ['ENV 覆盖',String(configMeta.overriddenFields.length)+' 个字段'],
   ].map(([label,value])=>'<div class="summary-chip"><div class="label">'+escAdmin(label)+'</div><div class="value">'+escAdmin(value)+'</div></div>').join('');
   renderProxyPoolStatus();
+  renderFlareSolverrStatus();
   document.getElementById('configGroups').innerHTML=CONFIG_GROUPS.map(group=>'<section class="config-group" id="group-'+group.id+'"><div class="config-group-header"><h3>'+escAdmin(group.title)+'</h3></div><div class="field-grid">'+group.fields.map(renderField).join('')+'</div></section>').join('');
 }
 
@@ -209,6 +259,67 @@ function renderProxyPoolStatus(){
       +'<div class="proxy-status-cell"><span class="label">探测延迟</span><span class="value">'+escAdmin(entry.latencyMs!=null?entry.latencyMs+' ms':'—')+'</span></div>'
       +'<div class="proxy-status-cell"><span class="label">连通状态</span><span class="value">'+escAdmin(entry.healthy?'可用':'不可用')+'</span></div>'
       +'</div>'+(entry.lastError?'<div class="proxy-status-error">'+escAdmin(entry.lastError)+'</div>':'')+'</div>').join('')+'</div>':'<div class="warning-item">当前还没有配置代理池节点。</div>');
+}
+
+function renderFlareSolverrStatus(){
+  const el=document.getElementById('flaresolverrStatus');
+  if(!el||!configData)return;
+  if(!configData.flaresolverr?.enabled&&!flaresolverrRuntime){el.innerHTML='';return}
+  const status=flaresolverrRuntime||{};
+  const cookies=status.hasCookies?'已获取':'未获取';
+  const canRefresh=!!configData.flaresolverr?.enabled&&!flaresolverrRefreshBusy;
+  const sourceMap={runtime:'自动刷新',config:'手填配置',none:'无可用值'};
+  const valueSource=sourceMap[status.valueSource]||String(status.valueSource||'none');
+  const detailCells=[
+    ['状态',status.status||'disabled'],
+    ['当前来源',valueSource],
+    ['Cookies',cookies+(status.cookieLength?(' · '+status.cookieLength+' chars'):'')],
+    ['来源代理',status.sourceProxy||'direct'],
+    ['UA 指纹',status.browser||'—'],
+    ['最近刷新',status.lastSuccessAt?fmtDate(status.lastSuccessAt):'—'],
+    ['下次刷新',status.nextRefreshAt?fmtDate(status.nextRefreshAt):'—']
+  ];
+  const warnings=[];
+  if(status.sharedProxyPoolWarning)warnings.push(status.sharedProxyPoolWarning);
+  if(status.lastError)warnings.push('最近错误：'+status.lastError);
+  const activeCookie=status.cookieHeader||'';
+  const activeUa=status.userAgent||'';
+  const activeBrowser=status.browser||'';
+  const readonlyBlock=(label,value,rows)=>'<div class="cfg-field full" style="margin-top:12px"><div class="cfg-label-row"><div class="cfg-label">'+escAdmin(label)+'</div></div><textarea class="cfg-textarea mono" rows="'+rows+'" readonly>'+escAdmin(value||'')+'</textarea></div>';
+  el.innerHTML='<div class="proxy-status-head"><div class="panel-title">FlareSolverr 运行时状态</div><div class="proxy-status-meta">'+escAdmin(configData.flaresolverr.enabled?'浏览器校验刷新已启用':'当前未启用浏览器校验刷新')+'</div></div>'
+    +'<div class="proxy-status-item"><div class="proxy-status-flags">'
+    +'<span class="badge '+(status.status==='ready'?'live':status.refreshing?'env':'restart')+'">'+escAdmin(status.status||'disabled').toUpperCase()+'</span>'
+    +(status.refreshing?'<span class="badge env">刷新中</span>':'')
+    +(status.hasCookies?'<span class="badge live">HAS COOKIE</span>':'')
+    +(status.valueSource==='config'?'<span class="badge env">MANUAL</span>':status.valueSource==='runtime'?'<span class="badge live">RUNTIME</span>':'')
+    +'</div><div class="proxy-status-grid">'+detailCells.map(([label,value])=>'<div class="proxy-status-cell"><span class="label">'+escAdmin(label)+'</span><span class="value">'+escAdmin(value)+'</span></div>').join('')+'</div>'
+    +(activeCookie?readonlyBlock('当前生效的 Cookie Header',activeCookie,5):'')
+    +(activeUa?readonlyBlock('当前生效的 User-Agent',activeUa,3):'')
+    +(activeBrowser?readonlyBlock('当前生效的 Browser 标识',activeBrowser,2):'')
+    +(warnings.length?warnings.map(msg=>'<div class="proxy-status-error">'+escAdmin(msg)+'</div>').join(''):'')
+    +'<div class="quick-actions" style="margin-top:12px"><button class="hdr-btn'+(canRefresh?'':' disabled')+'" onclick="refreshFlareSolverr()" '+(canRefresh?'':'disabled')+'>'+(flaresolverrRefreshBusy?'刷新中...':'手动刷新一次')+'</button></div>'
+    +'</div>';
+}
+
+async function refreshFlareSolverr(){
+  if(flaresolverrRefreshBusy)return;
+  flaresolverrRefreshBusy=true;
+  renderFlareSolverrStatus();
+  try{
+    const resp=await fetch(adminAuthQ('/api/admin/flaresolverr/refresh'),{method:'POST'});
+    if(resp.status===401||resp.status===403){localStorage.removeItem('cursor2api_token');window.location.href=adminUrl('config');return}
+    const data=await readApiPayload(resp);
+    if(!resp.ok)throw new Error(data.message||'手动刷新失败');
+    flaresolverrRuntime=data.status||flaresolverrRuntime;
+    renderOverview();
+    renderFlareSolverrStatus();
+    showAdminToast(data.success?'FlareSolverr 刷新成功。':'FlareSolverr 刷新失败。',data.success?'success':'error');
+  }catch(err){
+    showAdminToast(err?.message||'FlareSolverr 刷新失败。','error');
+  }finally{
+    flaresolverrRefreshBusy=false;
+    renderFlareSolverrStatus();
+  }
 }
 
 function renderField(field){
@@ -273,6 +384,7 @@ async function saveConfig(){
   if(!resp.ok){configData=payload;configErrors=data.errors||{};renderConfig();updateSaveState();showAdminToast(data.message||'保存失败，请检查配置。','error');return}
   configData=data.config;configMeta=data.meta;configErrors={};configDirty=false;saveState='saved';renderAlerts();renderOverview();renderConfig();updateSaveState();showAdminToast((data.changes&&data.changes.length?('已保存，'+data.changes.length+' 项变更。'):'配置已保存。')+(data.requiresRestart?' 端口变更需要重启服务。':''),'success');
   await loadProxyPoolStatus();
+  await loadFlareSolverrStatus();
 }
 
 function showAdminToast(message,kind){
@@ -285,5 +397,5 @@ document.getElementById('configGroups').addEventListener('change',e=>{const path
 window.addEventListener('popstate',()=>switchDashboardTab(new URLSearchParams(window.location.search).get('tab'),false));
 
 loadConfig().then(()=>switchDashboardTab(dashboardTab,false)).catch(err=>{console.error(err);showAdminToast(err?.message||'后台配置加载失败。','error')});
-setInterval(()=>{if(configData)loadProxyPoolStatus().catch(err=>console.error(err))},15000);
+setInterval(()=>{if(configData){loadProxyPoolStatus().catch(err=>console.error(err));loadFlareSolverrStatus().catch(err=>console.error(err))}},15000);
 

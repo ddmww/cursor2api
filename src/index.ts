@@ -9,10 +9,20 @@ import 'dotenv/config';
 import { createRequire } from 'module';
 import express from 'express';
 import { getConfig, initConfigWatcher, stopConfigWatcher } from './config.js';
+import { initFlareSolverrRefreshLoop, stopFlareSolverrRefreshLoop } from './flaresolverr.js';
 import { handleMessages, listModels, countTokens } from './handler.js';
 import { handleOpenAIChatCompletions, handleOpenAIResponses } from './openai-handler.js';
 import { apiGetLogs, apiGetRequests, apiGetStats, apiGetPayload, apiLogsStream, apiClearLogs } from './log-viewer.js';
-import { dashboardAuth, serveAdminUi, redirectLogsToAdmin, apiGetAdminConfig, apiPutAdminConfig, apiGetProxyPoolStatus } from './admin-ui.js';
+import {
+    dashboardAuth,
+    serveAdminUi,
+    redirectLogsToAdmin,
+    apiGetAdminConfig,
+    apiPutAdminConfig,
+    apiGetProxyPoolStatus,
+    apiGetFlareSolverrStatus,
+    apiPostFlareSolverrRefresh,
+} from './admin-ui.js';
 import { loadLogsFromFiles } from './logger.js';
 
 // 从 package.json 读取版本号，统一来源，避免多处硬编码
@@ -52,6 +62,8 @@ app.get('/api/logs/stream', dashboardAuth, apiLogsStream);
 app.post('/api/logs/clear', dashboardAuth, apiClearLogs);
 app.get('/api/admin/config', dashboardAuth, apiGetAdminConfig);
 app.get('/api/admin/proxy-pool/status', dashboardAuth, apiGetProxyPoolStatus);
+app.get('/api/admin/flaresolverr/status', dashboardAuth, apiGetFlareSolverrStatus);
+app.post('/api/admin/flaresolverr/refresh', dashboardAuth, apiPostFlareSolverrRefresh);
 app.put('/api/admin/config', dashboardAuth, apiPutAdminConfig);
 
 // ★ API 鉴权中间件：配置了 authTokens 则需要 Bearer token
@@ -169,14 +181,17 @@ app.listen(config.port, () => {
 
     // ★ 启动 config.yaml 热重载监听
     initConfigWatcher();
+    initFlareSolverrRefreshLoop();
 });
 
 // ★ 优雅关闭：停止文件监听
 process.on('SIGTERM', () => {
     stopConfigWatcher();
+    stopFlareSolverrRefreshLoop();
     process.exit(0);
 });
 process.on('SIGINT', () => {
     stopConfigWatcher();
+    stopFlareSolverrRefreshLoop();
     process.exit(0);
 });

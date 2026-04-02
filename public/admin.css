@@ -30,6 +30,11 @@
   box-shadow: none;
 }
 
+.hdr-btn:disabled {
+  opacity: .45;
+  cursor: not-allowed;
+}
+
 .link-btn {
   text-decoration: none;
   display: inline-flex;

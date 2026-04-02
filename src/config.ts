@@ -33,6 +33,9 @@ function parseYamlConfig(defaults: AppConfig): { config: AppConfig; raw: Record<
             freshConnectionPerRequest: defaults.proxyPool.freshConnectionPerRequest,
             healthCheck: { ...defaults.proxyPool.healthCheck },
         },
+        flaresolverr: {
+            ...defaults.flaresolverr,
+        },
         upstreamBlocker: {
             ...defaults.upstreamBlocker,
             keywords: [...defaults.upstreamBlocker.keywords],
@@ -64,6 +67,30 @@ function parseYamlConfig(defaults: AppConfig): { config: AppConfig; raw: Record<
                     intervalSeconds: typeof healthCheck.interval_seconds === 'number' ? healthCheck.interval_seconds : 60,
                     url: healthCheck.url || 'http://cp.cloudflare.com/generate_204',
                 },
+            };
+        }
+        if (yaml.flaresolverr) {
+            result.flaresolverr = {
+                enabled: yaml.flaresolverr.enabled === true,
+                url: typeof yaml.flaresolverr.url === 'string' ? yaml.flaresolverr.url : defaults.flaresolverr.url,
+                solveUrl: typeof yaml.flaresolverr.solve_url === 'string' && yaml.flaresolverr.solve_url.trim()
+                    ? yaml.flaresolverr.solve_url.trim()
+                    : defaults.flaresolverr.solveUrl,
+                refreshIntervalSeconds: typeof yaml.flaresolverr.refresh_interval_seconds === 'number'
+                    ? yaml.flaresolverr.refresh_interval_seconds
+                    : defaults.flaresolverr.refreshIntervalSeconds,
+                timeoutSeconds: typeof yaml.flaresolverr.timeout_seconds === 'number'
+                    ? yaml.flaresolverr.timeout_seconds
+                    : defaults.flaresolverr.timeoutSeconds,
+                cookieHeader: typeof yaml.flaresolverr.cookie_header === 'string'
+                    ? yaml.flaresolverr.cookie_header.trim()
+                    : defaults.flaresolverr.cookieHeader,
+                userAgent: typeof yaml.flaresolverr.user_agent === 'string'
+                    ? yaml.flaresolverr.user_agent.trim()
+                    : defaults.flaresolverr.userAgent,
+                browser: typeof yaml.flaresolverr.browser === 'string'
+                    ? yaml.flaresolverr.browser.trim()
+                    : defaults.flaresolverr.browser,
             };
         }
         if (yaml.upstream_blocker) {
@@ -173,6 +200,32 @@ function applyEnvOverrides(cfg: AppConfig): void {
         cfg.proxyPool.freshConnectionPerRequest =
             process.env.PROXY_POOL_FRESH_CONNECTION_PER_REQUEST === 'true' ||
             process.env.PROXY_POOL_FRESH_CONNECTION_PER_REQUEST === '1';
+    }
+    if (process.env.FLARESOLVERR_ENABLED !== undefined) {
+        cfg.flaresolverr.enabled =
+            process.env.FLARESOLVERR_ENABLED === 'true' ||
+            process.env.FLARESOLVERR_ENABLED === '1';
+    }
+    if (process.env.FLARESOLVERR_URL !== undefined) {
+        cfg.flaresolverr.url = process.env.FLARESOLVERR_URL;
+    }
+    if (process.env.FLARESOLVERR_SOLVE_URL !== undefined) {
+        cfg.flaresolverr.solveUrl = process.env.FLARESOLVERR_SOLVE_URL;
+    }
+    if (process.env.FLARESOLVERR_REFRESH_INTERVAL_SECONDS !== undefined) {
+        cfg.flaresolverr.refreshIntervalSeconds = parseInt(process.env.FLARESOLVERR_REFRESH_INTERVAL_SECONDS);
+    }
+    if (process.env.FLARESOLVERR_TIMEOUT_SECONDS !== undefined) {
+        cfg.flaresolverr.timeoutSeconds = parseInt(process.env.FLARESOLVERR_TIMEOUT_SECONDS);
+    }
+    if (process.env.FLARESOLVERR_COOKIE_HEADER !== undefined) {
+        cfg.flaresolverr.cookieHeader = process.env.FLARESOLVERR_COOKIE_HEADER.trim();
+    }
+    if (process.env.FLARESOLVERR_USER_AGENT !== undefined) {
+        cfg.flaresolverr.userAgent = process.env.FLARESOLVERR_USER_AGENT.trim();
+    }
+    if (process.env.FLARESOLVERR_BROWSER !== undefined) {
+        cfg.flaresolverr.browser = process.env.FLARESOLVERR_BROWSER.trim();
     }
     if (process.env.UPSTREAM_BLOCKER_ENABLED !== undefined) {
         cfg.upstreamBlocker.enabled = process.env.UPSTREAM_BLOCKER_ENABLED === 'true' || process.env.UPSTREAM_BLOCKER_ENABLED === '1';
@@ -284,6 +337,16 @@ function defaultConfig(): AppConfig {
                 url: 'http://cp.cloudflare.com/generate_204',
             },
         },
+        flaresolverr: {
+            enabled: false,
+            url: '',
+            solveUrl: 'https://cursor.com/docs',
+            refreshIntervalSeconds: 3000,
+            timeoutSeconds: 60,
+            cookieHeader: '',
+            userAgent: '',
+            browser: '',
+        },
         upstreamBlocker: {
             enabled: false,
             blockEmptyResponse: false,
@@ -313,6 +376,7 @@ function detectChanges(oldCfg: AppConfig, newCfg: AppConfig): string[] {
     if (oldCfg.timeout !== newCfg.timeout) changes.push(`timeout: ${oldCfg.timeout} → ${newCfg.timeout}`);
     if (oldCfg.proxy !== newCfg.proxy) changes.push(`proxy: ${oldCfg.proxy || '(none)'} → ${newCfg.proxy || '(none)'}`);
     if (JSON.stringify(oldCfg.proxyPool) !== JSON.stringify(newCfg.proxyPool)) changes.push('proxy_pool: (changed)');
+    if (JSON.stringify(oldCfg.flaresolverr) !== JSON.stringify(newCfg.flaresolverr)) changes.push('flaresolverr: (changed)');
     if (JSON.stringify(oldCfg.upstreamBlocker) !== JSON.stringify(newCfg.upstreamBlocker)) changes.push('upstream_blocker: (changed)');
     if (oldCfg.cursorModel !== newCfg.cursorModel) changes.push(`cursor_model: ${oldCfg.cursorModel} → ${newCfg.cursorModel}`);
     if (oldCfg.maxAutoContinue !== newCfg.maxAutoContinue) changes.push(`max_auto_continue: ${oldCfg.maxAutoContinue} → ${newCfg.maxAutoContinue}`);

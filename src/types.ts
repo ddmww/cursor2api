@@ -151,11 +151,53 @@ export interface UpstreamBlockerConfig {
     message: string;
 }
 
+export interface FlareSolverrConfig {
+    enabled: boolean;
+    url: string;
+    solveUrl: string;
+    refreshIntervalSeconds: number;
+    timeoutSeconds: number;
+    cookieHeader: string;
+    userAgent: string;
+    browser: string;
+}
+
+export type FlareSolverrStatus =
+    | 'disabled'
+    | 'idle'
+    | 'refreshing'
+    | 'ready'
+    | 'stale'
+    | 'error';
+
+export interface FlareSolverrRuntimeStatus {
+    enabled: boolean;
+    configured: boolean;
+    refreshing: boolean;
+    status: FlareSolverrStatus;
+    hasCookies: boolean;
+    cookieLength: number;
+    cookieHeader: string;
+    userAgent: string;
+    browser: string;
+    valueSource: 'runtime' | 'config' | 'none';
+    lastSuccessAt?: number;
+    lastAttemptAt?: number;
+    lastError?: string;
+    sourceProxy?: string;
+    sourceProxySource?: ProxySource;
+    nextRefreshAt?: number;
+    solveUrl: string;
+    refreshIntervalSeconds: number;
+    sharedProxyPoolWarning?: string;
+}
+
 export interface AppConfig {
     port: number;
     timeout: number;
     proxy?: string;
     proxyPool: ProxyPoolConfig;
+    flaresolverr: FlareSolverrConfig;
     upstreamBlocker: UpstreamBlockerConfig;
     cursorModel: string;
     authTokens?: string[];  // API 鉴权 token 列表，为空则不鉴权

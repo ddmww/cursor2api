@@ -4,6 +4,7 @@ import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { parseDocument } from 'yaml';
 import { CONFIG_FILE_PATH, CONFIG_TEMPLATE_PATH, getConfig, initConfigWatcher, reloadConfigFromDisk, stopConfigWatcher } from './config.js';
+import { getFlareSolverrStatusSnapshot, refreshFlareSolverrNow } from './flaresolverr.js';
 import { getProxyPoolStatusSnapshot } from './proxy-agent.js';
 import { validateHttpProxyUrl } from './proxy-pool.js';
 
@@ -27,6 +28,16 @@ interface EditableYamlConfig {
             interval_seconds: number;
             url: string;
         };
+    };
+    flaresolverr: {
+        enabled: boolean;
+        url: string;
+        solve_url: string;
+        refresh_interval_seconds: number;
+        timeout_seconds: number;
+        cookie_header: string;
+        user_agent: string;
+        browser: string;
     };
     upstream_blocker: {
         enabled: boolean;
@@ -92,6 +103,14 @@ const LIVE_RELOAD_FIELDS = [
     'proxy_pool.health_check.enabled',
     'proxy_pool.health_check.interval_seconds',
     'proxy_pool.health_check.url',
+    'flaresolverr.enabled',
+    'flaresolverr.url',
+    'flaresolverr.solve_url',
+    'flaresolverr.refresh_interval_seconds',
+    'flaresolverr.timeout_seconds',
+    'flaresolverr.cookie_header',
+    'flaresolverr.user_agent',
+    'flaresolverr.browser',
     'upstream_blocker.enabled',
     'upstream_blocker.block_empty_response',
     'upstream_blocker.case_sensitive',
@@ -133,6 +152,14 @@ const ENV_OVERRIDE_MAP: Record<string, string> = {
     port: 'PORT',
     timeout: 'TIMEOUT',
     proxy: 'PROXY',
+    'flaresolverr.enabled': 'FLARESOLVERR_ENABLED',
+    'flaresolverr.url': 'FLARESOLVERR_URL',
+    'flaresolverr.solve_url': 'FLARESOLVERR_SOLVE_URL',
+    'flaresolverr.refresh_interval_seconds': 'FLARESOLVERR_REFRESH_INTERVAL_SECONDS',
+    'flaresolverr.timeout_seconds': 'FLARESOLVERR_TIMEOUT_SECONDS',
+    'flaresolverr.cookie_header': 'FLARESOLVERR_COOKIE_HEADER',
+    'flaresolverr.user_agent': 'FLARESOLVERR_USER_AGENT',
+    'flaresolverr.browser': 'FLARESOLVERR_BROWSER',
     'upstream_blocker.enabled': 'UPSTREAM_BLOCKER_ENABLED',
     'upstream_blocker.block_empty_response': 'UPSTREAM_BLOCKER_BLOCK_EMPTY_RESPONSE',
     'upstream_blocker.case_sensitive': 'UPSTREAM_BLOCKER_CASE_SENSITIVE',
@@ -262,6 +289,16 @@ function getDefaultEditableConfig(): EditableYamlConfig {
                 url: 'http://cp.cloudflare.com/generate_204',
             },
         },
+        flaresolverr: {
+            enabled: false,
+            url: '',
+            solve_url: 'https://cursor.com/docs',
+            refresh_interval_seconds: 3000,
+            timeout_seconds: 60,
+            cookie_header: '',
+            user_agent: '',
+            browser: '',
+        },
         upstream_blocker: {
             enabled: false,
             block_empty_response: false,
@@ -336,6 +373,7 @@ function readEditableConfigFile(): { config: EditableYamlConfig; fileExists: boo
     const logging = asObject(raw.logging);
     const proxyPool = asObject(raw.proxy_pool);
     const proxyPoolHealthCheck = asObject(proxyPool.health_check);
+    const flaresolverr = asObject(raw.flaresolverr);
     const upstreamBlocker = asObject(raw.upstream_blocker);
 
     return {
@@ -354,6 +392,16 @@ function readEditableConfigFile(): { config: EditableYamlConfig; fileExists: boo
                     interval_seconds: asInt(proxyPoolHealthCheck.interval_seconds, fallback.proxy_pool.health_check.interval_seconds),
                     url: asString(proxyPoolHealthCheck.url, fallback.proxy_pool.health_check.url),
                 },
+            },
+            flaresolverr: {
+                enabled: asBoolean(flaresolverr.enabled, fallback.flaresolverr.enabled),
+                url: asString(flaresolverr.url, fallback.flaresolverr.url),
+                solve_url: asString(flaresolverr.solve_url, fallback.flaresolverr.solve_url),
+                refresh_interval_seconds: asInt(flaresolverr.refresh_interval_seconds, fallback.flaresolverr.refresh_interval_seconds),
+                timeout_seconds: asInt(flaresolverr.timeout_seconds, fallback.flaresolverr.timeout_seconds),
+                cookie_header: asString(flaresolverr.cookie_header, fallback.flaresolverr.cookie_header),
+                user_agent: asString(flaresolverr.user_agent, fallback.flaresolverr.user_agent),
+                browser: asString(flaresolverr.browser, fallback.flaresolverr.browser),
             },
             upstream_blocker: {
                 enabled: asBoolean(upstreamBlocker.enabled, fallback.upstream_blocker.enabled),
@@ -513,6 +561,16 @@ function validateConfig(input: unknown): { config?: EditableYamlConfig; errors: 
     normalized.proxy_pool.health_check.interval_seconds = asInt(proxyPoolHealthCheck.interval_seconds, normalized.proxy_pool.health_check.interval_seconds);
     normalized.proxy_pool.health_check.url = asString(proxyPoolHealthCheck.url, normalized.proxy_pool.health_check.url).trim();
 
+    const flaresolverr = asObject(raw.flaresolverr);
+    normalized.flaresolverr.enabled = asBoolean(flaresolverr.enabled, normalized.flaresolverr.enabled);
+    normalized.flaresolverr.url = asString(flaresolverr.url, '').trim();
+    normalized.flaresolverr.solve_url = asString(flaresolverr.solve_url, normalized.flaresolverr.solve_url).trim();
+    normalized.flaresolverr.refresh_interval_seconds = asInt(flaresolverr.refresh_interval_seconds, normalized.flaresolverr.refresh_interval_seconds);
+    normalized.flaresolverr.timeout_seconds = asInt(flaresolverr.timeout_seconds, normalized.flaresolverr.timeout_seconds);
+    normalized.flaresolverr.cookie_header = asString(flaresolverr.cookie_header, '').trim();
+    normalized.flaresolverr.user_agent = asString(flaresolverr.user_agent, '').trim();
+    normalized.flaresolverr.browser = asString(flaresolverr.browser, '').trim();
+
     if (!Number.isInteger(normalized.proxy_pool.cooldown_seconds) || normalized.proxy_pool.cooldown_seconds < 0) {
         errors['proxy_pool.cooldown_seconds'] = 'proxy_pool.cooldown_seconds 必须是大于等于 0 的整数。';
     }
@@ -533,6 +591,24 @@ function validateConfig(input: unknown): { config?: EditableYamlConfig; errors: 
     }
     if (normalized.proxy_pool.enabled && normalized.proxy_pool.urls.length === 0) {
         errors['proxy_pool.urls'] = '启用代理池时，至少需要配置一个 http:// / https:// 代理地址，或一行 direct 表示服务器直连。';
+    }
+    if (normalized.flaresolverr.enabled) {
+        if (!normalized.flaresolverr.url) {
+            errors['flaresolverr.url'] = '启用 FlareSolverr 时必须配置 flaresolverr.url。';
+        } else if (!/^https?:\/\//i.test(normalized.flaresolverr.url)) {
+            errors['flaresolverr.url'] = 'flaresolverr.url 必须是 http:// 或 https:// 地址。';
+        }
+        if (!normalized.flaresolverr.solve_url) {
+            errors['flaresolverr.solve_url'] = '启用 FlareSolverr 时必须配置 solve_url。';
+        } else if (!/^https?:\/\//i.test(normalized.flaresolverr.solve_url)) {
+            errors['flaresolverr.solve_url'] = 'flaresolverr.solve_url 必须是 http:// 或 https:// 地址。';
+        }
+    }
+    if (!Number.isInteger(normalized.flaresolverr.refresh_interval_seconds) || normalized.flaresolverr.refresh_interval_seconds <= 0) {
+        errors['flaresolverr.refresh_interval_seconds'] = 'flaresolverr.refresh_interval_seconds 必须是正整数。';
+    }
+    if (!Number.isInteger(normalized.flaresolverr.timeout_seconds) || normalized.flaresolverr.timeout_seconds <= 0) {
+        errors['flaresolverr.timeout_seconds'] = 'flaresolverr.timeout_seconds 必须是正整数。';
     }
 
     const upstreamBlocker = asObject(raw.upstream_blocker);
@@ -661,6 +737,14 @@ function writeEditableConfig(config: EditableYamlConfig): void {
     doc.setIn(['proxy_pool', 'health_check', 'enabled'], config.proxy_pool.health_check.enabled);
     doc.setIn(['proxy_pool', 'health_check', 'interval_seconds'], config.proxy_pool.health_check.interval_seconds);
     doc.setIn(['proxy_pool', 'health_check', 'url'], config.proxy_pool.health_check.url);
+    doc.setIn(['flaresolverr', 'enabled'], config.flaresolverr.enabled);
+    setOptionalString(doc, ['flaresolverr', 'url'], config.flaresolverr.url);
+    doc.setIn(['flaresolverr', 'solve_url'], config.flaresolverr.solve_url);
+    doc.setIn(['flaresolverr', 'refresh_interval_seconds'], config.flaresolverr.refresh_interval_seconds);
+    doc.setIn(['flaresolverr', 'timeout_seconds'], config.flaresolverr.timeout_seconds);
+    setOptionalString(doc, ['flaresolverr', 'cookie_header'], config.flaresolverr.cookie_header);
+    setOptionalString(doc, ['flaresolverr', 'user_agent'], config.flaresolverr.user_agent);
+    setOptionalString(doc, ['flaresolverr', 'browser'], config.flaresolverr.browser);
     doc.setIn(['upstream_blocker', 'enabled'], config.upstream_blocker.enabled);
     doc.setIn(['upstream_blocker', 'block_empty_response'], config.upstream_blocker.block_empty_response);
     doc.setIn(['upstream_blocker', 'case_sensitive'], config.upstream_blocker.case_sensitive);
@@ -741,6 +825,35 @@ export function apiGetProxyPoolStatus(_req: Request, res: Response): void {
             success: false,
             message: '读取代理池状态失败',
             error: error instanceof Error ? error.message : String(error),
+        });
+    }
+}
+
+export function apiGetFlareSolverrStatus(_req: Request, res: Response): void {
+    try {
+        res.json(getFlareSolverrStatusSnapshot());
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            message: '读取 FlareSolverr 状态失败',
+            error: error instanceof Error ? error.message : String(error),
+        });
+    }
+}
+
+export async function apiPostFlareSolverrRefresh(_req: Request, res: Response): Promise<void> {
+    try {
+        const success = await refreshFlareSolverrNow('manual');
+        res.json({
+            success,
+            status: getFlareSolverrStatusSnapshot(),
+        });
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            message: '手动刷新 FlareSolverr 失败',
+            error: error instanceof Error ? error.message : String(error),
+            status: getFlareSolverrStatusSnapshot(),
         });
     }
 }

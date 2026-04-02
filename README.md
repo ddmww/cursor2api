@@ -33,6 +33,7 @@
 - **🆕 动态工具结果预算** - 根据上下文大小自动调整工具结果截断限制，替代固定 15K
 - **🆕 Vision 独立代理** - 图片 API 单独走代理，Cursor API 保持直连不受影响
 - **🆕 代理池轮询 + 429 故障转移** - 支持 HTTP/mixed 代理池、健康检查、冷却与一次切换重试
+- **🆕 FlareSolverr 浏览器校验刷新** - 定时拉取 Cursor 浏览器 cookies / UA，支持手填 Cookie Header、UA、browser 作为兜底
 - **🆕 计费头清除** - 自动清除 `x-anthropic-billing-header` 防止注入警告
 - **工具参数自动修复** - 字段名映射 (`file_path` → `path`)、智能引号替换、模糊匹配修复
 - **多模态视觉降级处理** - 内置纯本地 CPU OCR 图片文字提取（零配置免 Key），或支持外接第三方免费视觉大模型 API 解释图片
@@ -79,6 +80,12 @@ cp config.yaml.example config.yaml
 | `proxy_pool.urls` | 代理池节点列表（`http/https`，也支持 `direct`） | 空 |
 | `proxy_pool.cooldown_seconds` | 429 / 网络错误冷却秒数（可设 `0` 禁用冷却） | `30` |
 | `proxy_pool.health_check.*` | 代理池健康检查配置 | 关闭 |
+| `flaresolverr.enabled` | 启用浏览器校验自动刷新 | `false` |
+| `flaresolverr.url` | FlareSolverr 服务地址 | 空 |
+| `flaresolverr.solve_url` | 用于过挑战的页面 | `https://cursor.com/docs` |
+| `flaresolverr.cookie_header` | 手填明文 Cookie Header，自动刷新不可用时回退 | 空 |
+| `flaresolverr.user_agent` | 手填 User-Agent | 空 |
+| `flaresolverr.browser` | 手填 browser 标识（如 `chrome140`） | 空 |
 | `vision.enabled` | 开启视觉拦截 | `true` |
 | `vision.mode` | 视觉模式：`ocr` / `api` | `ocr` |
 | `vision.proxy` | Vision 独立代理 | 不配置 |
@@ -92,6 +99,35 @@ cp config.yaml.example config.yaml
 | `upstream_blocker.*` | 命中上游关键词或空回复时改为返回 `500` 错误，支持大小写敏感与空回复开关 | 关闭 |
 
 > 💡 详细配置说明请参见 `config.yaml.example` 中的注释。
+
+### FlareSolverr 浏览器校验刷新
+
+如果你的出口 IP 会被 `cursor.com` 前面的 Vercel 安全校验拦截，可以启用 `flaresolverr`：
+
+```yaml
+flaresolverr:
+  enabled: true
+  url: "http://127.0.0.1:8191"
+  solve_url: "https://cursor.com/docs"
+  refresh_interval_seconds: 3000
+  timeout_seconds: 60
+  cookie_header: ""
+  user_agent: ""
+  browser: ""
+```
+
+- `enabled: true` 时，服务会后台定时调用 FlareSolverr，用浏览器访问 `solve_url`，获取整组 `cursor.com` cookies 和真实 UA。
+- `cookie_header / user_agent / browser` 可以直接在 `config.yaml` 或 `/admin` 里明文查看、编辑、手动填写。自动刷新成功时优先使用运行时值；没有运行时值时回退到手填值。
+- 如果启用了 `proxy_pool`，当前版本只共享一份 cookie/UA，不会按每个池节点分别维护 cookie jar；出口节点切换后，校验可能失效。
+- Cookie、UA、browser 的自动刷新值只保存在内存运行时状态，不会回写到 `config.yaml`。
+
+本地启动 FlareSolverr 的常见方式：
+
+```bash
+docker run -d --name flaresolverr -p 8191:8191 ghcr.io/flaresolverr/flaresolverr:latest
+```
+
+如果需要让 FlareSolverr 自己也走代理，请在 FlareSolverr 侧配置，或让 cursor2api 的 `proxy` / `proxy_pool` 为其挑选出口。
 
 ### 3. 启动
 
