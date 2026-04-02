@@ -49,7 +49,7 @@ cursor_model: "anthropic/claude-sonnet-4.6"
 flaresolverr:
   enabled: false
   url: ""
-  solve_url: "https://cursor.com/docs"
+  solve_url: "https://cursor.com/cn/docs"
   refresh_interval_seconds: 3000
   timeout_seconds: 60
   cookie_header: "manual_a=1; manual_b=two"
@@ -117,6 +117,12 @@ test('手填配置会作为 FlareSolverr 的有效回退值注入请求头', () 
     assertEqual(headers.cookie, 'manual_a=1; manual_b=two', '请求头应注入手填 cookie');
     assertEqual(headers['user-agent'], manualUserAgent, '请求头应注入手填 UA');
     assert(headers['sec-ch-ua']?.includes('140'), '动态 client hints 应根据手填 UA 生成');
+    assertEqual(headers.referer, 'https://cursor.com/cn/docs', '默认 referer 应与 solve_url 对齐');
+    assertEqual(headers.accept, '*/*', '应贴近浏览器请求携带 accept: */*');
+    assertEqual(headers['cache-control'], 'no-cache', '应贴近浏览器请求携带 cache-control');
+    assert(!('x-path' in headers), '不应再携带非官方的 x-path');
+    assert(!('x-method' in headers), '不应再携带非官方的 x-method');
+    assert(!('x-is-human' in headers), '不应再携带 x-is-human');
 });
 
 test('自动刷新成功后，运行时 cookies/UA 会覆盖手填配置', async () => {
@@ -126,7 +132,7 @@ cursor_model: "anthropic/claude-sonnet-4.6"
 flaresolverr:
   enabled: true
   url: "http://127.0.0.1:8191"
-  solve_url: "https://cursor.com/docs"
+  solve_url: "https://cursor.com/cn/docs"
   refresh_interval_seconds: 3000
   timeout_seconds: 60
   cookie_header: "manual_a=1; manual_b=two"
@@ -136,16 +142,31 @@ flaresolverr:
     reloadConfigFromDisk();
 
     const originalFetch = global.fetch;
-    global.fetch = async () => new Response(JSON.stringify({
-        status: 'ok',
-        solution: {
-            cookies: [{ name: '_vcrcs', value: 'runtime-cookie' }, { name: 'cursor_session', value: 'xyz' }],
-            userAgent: runtimeUserAgent,
-        },
-    }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-    });
+    const fetchCalls = [];
+    global.fetch = async (url, init) => {
+        fetchCalls.push({ url: String(url), headers: init?.headers || {}, body: init?.body ? String(init.body) : '' });
+        if (String(url).endsWith('/v1')) {
+            return new Response(JSON.stringify({
+                status: 'ok',
+                solution: {
+                    cookies: [
+                        { name: 'cursor_anonymous_id', value: 'runtime-cookie' },
+                        { name: 'statsig_stable_id', value: 'stable-xyz' },
+                        { name: '_ca_device_id', value: 'device-123' },
+                    ],
+                    userAgent: runtimeUserAgent,
+                },
+            }), {
+                status: 200,
+                headers: { 'Content-Type': 'application/json' },
+            });
+        }
+
+        return new Response('data: {"type":"start"}\n\ndata: {"type":"start-step"}\n\ndata: [DONE]\n', {
+            status: 200,
+            headers: { 'Content-Type': 'text/event-stream' },
+        });
+    };
 
     try {
         const success = await refreshFlareSolverrNow('unit-test');
@@ -153,14 +174,18 @@ flaresolverr:
 
         const snapshot = getFlareSolverrStatusSnapshot();
         assertEqual(snapshot.valueSource, 'runtime', '成功刷新后应优先使用运行时值');
-        assertEqual(snapshot.cookieHeader, '_vcrcs=runtime-cookie; cursor_session=xyz');
+        assertEqual(snapshot.cookieHeader, 'cursor_anonymous_id=runtime-cookie; statsig_stable_id=stable-xyz; _ca_device_id=device-123');
         assertEqual(snapshot.userAgent, runtimeUserAgent);
         assertEqual(snapshot.browser, 'edge134');
 
         const headers = buildCursorHeaders();
-        assertEqual(headers.cookie, '_vcrcs=runtime-cookie; cursor_session=xyz', '请求头应优先注入运行时 cookie');
+        assertEqual(headers.cookie, 'cursor_anonymous_id=runtime-cookie; statsig_stable_id=stable-xyz; _ca_device_id=device-123', '请求头应优先注入运行时 cookie');
         assertEqual(headers['user-agent'], runtimeUserAgent, '请求头应优先注入运行时 UA');
         assert(headers['sec-ch-ua']?.includes('Microsoft Edge'), '动态 client hints 应根据运行时 UA/browser 生成');
+        assert(fetchCalls.some(call => call.url.endsWith('/v1')), '刷新成功时应先请求 FlareSolverr');
+        const probeCall = fetchCalls.find(call => call.url === 'https://cursor.com/api/chat');
+        assert(probeCall, '刷新成功时应对 /api/chat 做一次 probe');
+        assert(String(probeCall.headers.referer || '').includes('/cn/docs'), 'probe 请求应使用 solve_url 作为 referer');
     } finally {
         global.fetch = originalFetch;
         stopFlareSolverrRefreshLoop();

@@ -340,7 +340,7 @@ function defaultConfig(): AppConfig {
         flaresolverr: {
             enabled: false,
             url: '',
-            solveUrl: 'https://cursor.com/docs',
+            solveUrl: 'https://cursor.com/cn/docs',
             refreshIntervalSeconds: 3000,
             timeoutSeconds: 60,
             cookieHeader: '',

@@ -34,6 +34,15 @@ interface HeaderOverrides {
     userAgent?: string;
     browser?: string;
     cookieHeader?: string;
+    referer?: string;
+}
+
+function getCursorReferer(overrides?: HeaderOverrides): string {
+    const configured = overrides?.referer?.trim() || getConfig().flaresolverr.solveUrl?.trim();
+    if (configured && /^https:\/\/cursor\.com\//i.test(configured)) {
+        return configured;
+    }
+    return 'https://cursor.com/cn/docs';
 }
 
 // Chrome 浏览器请求头模拟
@@ -42,23 +51,23 @@ export function buildCursorHeaders(overrides?: HeaderOverrides): Record<string, 
     const userAgent = overrides?.userAgent || getActiveFlareSolverrUserAgent() || config.fingerprint.userAgent;
     const browser = overrides?.browser || getActiveFlareSolverrBrowser() || extractBrowserProfile(userAgent);
     const cookieHeader = overrides?.cookieHeader || getActiveFlareSolverrCookieHeader();
+    const referer = getCursorReferer(overrides);
     const clientHints = (overrides?.userAgent || overrides?.browser || getActiveFlareSolverrUserAgent() || getActiveFlareSolverrBrowser())
         ? buildClientHintHeaders(userAgent, browser)
         : getLegacyClientHintHeaders();
 
     const headers: Record<string, string> = {
         'Content-Type': 'application/json',
-        'x-path': '/api/chat',
-        'x-method': 'POST',
+        'accept': '*/*',
+        'cache-control': 'no-cache',
         'origin': 'https://cursor.com',
         'sec-fetch-site': 'same-origin',
         'sec-fetch-mode': 'cors',
         'sec-fetch-dest': 'empty',
-        'referer': 'https://cursor.com/',
-        'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8',
+        'referer': referer,
+        'accept-language': 'zh-CN,zh;q=0.9',
         'priority': 'u=1, i',
         'user-agent': userAgent,
-        'x-is-human': '',
     };
 
     Object.assign(headers, Object.keys(clientHints).length > 0 ? clientHints : getLegacyClientHintHeaders());

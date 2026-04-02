@@ -44,7 +44,7 @@ timeout: 120
 #     url: "http://cp.cloudflare.com/generate_204"
 
 # ==================== FlareSolverr 浏览器校验刷新（可选） ====================
-# 用真正浏览器访问 cursor.com/docs，执行 Vercel JS 校验后拿整组 cookies 和 UA，
+# 用真正浏览器访问 cursor.com/cn/docs，执行 Vercel JS 校验后拿整组 cookies 和 UA，
 # 再注入后续 https://cursor.com/api/chat 请求。
 # 💡 与 grok2api 类似，支持两种来源：
 #   1. 自动刷新值：enabled=true 后由 FlareSolverr 定时拉取（优先使用）
@@ -53,7 +53,7 @@ timeout: 120
 # 环境变量:
 #   FLARESOLVERR_ENABLED=true|false
 #   FLARESOLVERR_URL=http://127.0.0.1:8191
-#   FLARESOLVERR_SOLVE_URL=https://cursor.com/docs
+#   FLARESOLVERR_SOLVE_URL=https://cursor.com/cn/docs
 #   FLARESOLVERR_REFRESH_INTERVAL_SECONDS=3000
 #   FLARESOLVERR_TIMEOUT_SECONDS=60
 #   FLARESOLVERR_COOKIE_HEADER="a=b; c=d"
@@ -62,7 +62,7 @@ timeout: 120
 # flaresolverr:
 #   enabled: true
 #   url: "http://127.0.0.1:8191"
-#   solve_url: "https://cursor.com/docs"
+#   solve_url: "https://cursor.com/cn/docs"
 #   refresh_interval_seconds: 3000
 #   timeout_seconds: 60
 #   cookie_header: ""

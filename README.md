@@ -82,7 +82,7 @@ cp config.yaml.example config.yaml
 | `proxy_pool.health_check.*` | 代理池健康检查配置 | 关闭 |
 | `flaresolverr.enabled` | 启用浏览器校验自动刷新 | `false` |
 | `flaresolverr.url` | FlareSolverr 服务地址 | 空 |
-| `flaresolverr.solve_url` | 用于过挑战的页面 | `https://cursor.com/docs` |
+| `flaresolverr.solve_url` | 用于过挑战和作为 Referer 的页面 | `https://cursor.com/cn/docs` |
 | `flaresolverr.cookie_header` | 手填明文 Cookie Header，自动刷新不可用时回退 | 空 |
 | `flaresolverr.user_agent` | 手填 User-Agent | 空 |
 | `flaresolverr.browser` | 手填 browser 标识（如 `chrome140`） | 空 |
@@ -108,7 +108,7 @@ cp config.yaml.example config.yaml
 flaresolverr:
   enabled: true
   url: "http://127.0.0.1:8191"
-  solve_url: "https://cursor.com/docs"
+  solve_url: "https://cursor.com/cn/docs"
   refresh_interval_seconds: 3000
   timeout_seconds: 60
   cookie_header: ""
@@ -116,7 +116,7 @@ flaresolverr:
   browser: ""
 ```
 
-- `enabled: true` 时，服务会后台定时调用 FlareSolverr，用浏览器访问 `solve_url`，获取整组 `cursor.com` cookies 和真实 UA。
+- `enabled: true` 时，服务会后台定时调用 FlareSolverr，用浏览器访问 `solve_url`，获取整组 `cursor.com` cookies 和真实 UA，并立即用同一组 cookie/UA 探测一次 `/api/chat`；只有探测通过才会标记为 ready。
 - `cookie_header / user_agent / browser` 可以直接在 `config.yaml` 或 `/admin` 里明文查看、编辑、手动填写。自动刷新成功时优先使用运行时值；没有运行时值时回退到手填值。
 - 如果启用了 `proxy_pool`，当前版本只共享一份 cookie/UA，不会按每个池节点分别维护 cookie jar；出口节点切换后，校验可能失效。
 - Cookie、UA、browser 的自动刷新值只保存在内存运行时状态，不会回写到 `config.yaml`。

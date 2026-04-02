@@ -292,7 +292,7 @@ function getDefaultEditableConfig(): EditableYamlConfig {
         flaresolverr: {
             enabled: false,
             url: '',
-            solve_url: 'https://cursor.com/docs',
+            solve_url: 'https://cursor.com/cn/docs',
             refresh_interval_seconds: 3000,
             timeout_seconds: 60,
             cookie_header: '',

@@ -8,6 +8,11 @@ function detectPlatform(userAgent: string): string | undefined {
     return undefined;
 }
 
+function detectPlatformVersion(platform: string | undefined): string | undefined {
+    if (platform === 'Windows') return '19.0.0';
+    return undefined;
+}
+
 function detectArch(userAgent: string): string | undefined {
     const ua = userAgent.toLowerCase();
     if (ua.includes('aarch64') || ua.includes('arm64') || ua.includes(' arm')) return 'arm';
@@ -94,6 +99,8 @@ export function buildClientHintHeaders(userAgent: string, browserHint?: string):
     };
 
     if (platform) headers['sec-ch-ua-platform'] = `"${platform}"`;
+    const platformVersion = detectPlatformVersion(platform);
+    if (platformVersion) headers['sec-ch-ua-platform-version'] = `"${platformVersion}"`;
     if (arch) {
         headers['sec-ch-ua-arch'] = `"${arch}"`;
         headers['sec-ch-ua-bitness'] = '"64"';

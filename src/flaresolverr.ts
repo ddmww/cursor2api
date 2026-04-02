@@ -1,5 +1,6 @@
+import { ProxyAgent } from 'undici';
 import { getConfig, onConfigReload } from './config.js';
-import { extractBrowserProfile } from './browser-fingerprint.js';
+import { buildClientHintHeaders, extractBrowserProfile, getLegacyClientHintHeaders } from './browser-fingerprint.js';
 import { isDirectProxyPoolUrl, selectProxyPoolUrl } from './proxy-pool.js';
 import type { FlareSolverrRuntimeStatus, ProxySource } from './types.js';
 
@@ -40,6 +41,9 @@ const runtimeState: RuntimeState = {
     status: 'disabled',
     refreshing: false,
 };
+
+const CURSOR_CHAT_API = 'https://cursor.com/api/chat';
+const CURSOR_REQUIRED_COOKIE_NAMES = ['cursor_anonymous_id', 'statsig_stable_id', '_ca_device_id'];
 
 let refreshPromise: Promise<boolean> | null = null;
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
@@ -158,6 +162,106 @@ function getSharedProxyPoolWarning(): string | undefined {
     return '当前为代理池共享一份 cookie/UA；如果实际出口节点切换，浏览器校验可能失效。';
 }
 
+function getCursorReferer(): string {
+    const configured = getConfig().flaresolverr.solveUrl?.trim();
+    if (configured && /^https:\/\/cursor\.com\//i.test(configured)) {
+        return configured;
+    }
+    return 'https://cursor.com/cn/docs';
+}
+
+function getMissingCursorCookieNames(cookieHeader: string): string[] {
+    const cookieNames = new Set(
+        cookieHeader
+            .split(';')
+            .map(part => part.split('=')[0]?.trim())
+            .filter(Boolean),
+    );
+    return CURSOR_REQUIRED_COOKIE_NAMES.filter(name => !cookieNames.has(name));
+}
+
+function buildProbeHeaders(userAgent: string, browser: string, cookieHeader: string): Record<string, string> {
+    const clientHints = userAgent
+        ? buildClientHintHeaders(userAgent, browser)
+        : getLegacyClientHintHeaders();
+
+    return {
+        'Content-Type': 'application/json',
+        'accept': '*/*',
+        'cache-control': 'no-cache',
+        'origin': 'https://cursor.com',
+        'sec-fetch-site': 'same-origin',
+        'sec-fetch-mode': 'cors',
+        'sec-fetch-dest': 'empty',
+        'referer': getCursorReferer(),
+        'accept-language': 'zh-CN,zh;q=0.9',
+        'priority': 'u=1, i',
+        'user-agent': userAgent,
+        'cookie': cookieHeader,
+        ...clientHints,
+    };
+}
+
+async function probeCursorChat(cookieHeader: string, userAgent: string, browser: string, proxyUrl?: string): Promise<void> {
+    if (!cookieHeader) {
+        throw new Error('未提供 cookie，无法执行 /api/chat 连通性探测。');
+    }
+
+    const body = {
+        context: [{ type: 'file', content: '', filePath: '/docs/' }],
+        model: 'google/gemini-3-flash',
+        id: `flaresolverr_probe_${Date.now()}`,
+        messages: [
+            {
+                id: `msg_probe_${Date.now()}`,
+                role: 'user',
+                parts: [{ type: 'text', text: '你好' }],
+            },
+        ],
+        trigger: 'submit-message',
+    };
+
+    const probeInit: RequestInit & { dispatcher?: ProxyAgent } = {
+        method: 'POST',
+        headers: buildProbeHeaders(userAgent, browser, cookieHeader),
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(45000),
+    };
+
+    let dispatcher: ProxyAgent | undefined;
+    if (proxyUrl && !isDirectProxyPoolUrl(proxyUrl)) {
+        dispatcher = new ProxyAgent(proxyUrl);
+        probeInit.dispatcher = dispatcher;
+    }
+
+    try {
+        const response = await fetch(CURSOR_CHAT_API, probeInit as any);
+        const contentType = response.headers.get('content-type') || '';
+        const text = await response.text();
+
+        if (isVercelSecurityCheckpointResponse(response.status, contentType, text)) {
+            throw new Error(`浏览器校验仍被拦截（HTTP ${response.status}）`);
+        }
+        if (!response.ok) {
+            throw new Error(`上游探测返回 HTTP ${response.status}`);
+        }
+        if (!/text\/event-stream/i.test(contentType)) {
+            throw new Error(`上游探测返回了非 SSE 响应：${contentType || 'unknown'}`);
+        }
+        if (!/data:\s*\{"type":"start"\}|data:\s*\{"type":"start-step"\}/.test(text)) {
+            throw new Error('上游探测未返回预期的 Cursor SSE 起始事件。');
+        }
+    } finally {
+        if (dispatcher) {
+            try {
+                await dispatcher.close();
+            } catch {
+                // ignore close failures
+            }
+        }
+    }
+}
+
 function setDisabledState(): void {
     clearRefreshTimer();
     runtimeState.cookieHeader = '';
@@ -267,6 +371,18 @@ async function runRefresh(reason: string): Promise<boolean> {
         runtimeState.cookieHeader = parsed.cookieHeader;
         runtimeState.userAgent = parsed.userAgent || runtimeState.userAgent || getConfig().fingerprint.userAgent;
         runtimeState.browser = parsed.browser || extractBrowserProfile(runtimeState.userAgent);
+        const missingCookieNames = getMissingCursorCookieNames(runtimeState.cookieHeader);
+        if (missingCookieNames.length > 0) {
+            runtimeState.lastError = `未检测到常见站点会话 cookie：${missingCookieNames.join(', ')}`;
+        }
+
+        await probeCursorChat(
+            runtimeState.cookieHeader,
+            runtimeState.userAgent,
+            runtimeState.browser,
+            proxySelection.proxyUrl,
+        );
+
         runtimeState.status = 'ready';
         runtimeState.lastSuccessAt = Date.now();
         runtimeState.lastError = undefined;

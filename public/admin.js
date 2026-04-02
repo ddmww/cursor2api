@@ -20,7 +20,7 @@ const CONFIG_GROUPS=[
   {id:'flaresolverr',title:'FlareSolverr',fields:[
     {path:'flaresolverr.enabled',label:'启用浏览器校验刷新',type:'checkbox',help:'通过 FlareSolverr 定时访问 cursor.com/docs，获取整组 cookies 和真实 UA。关闭后仍可使用下面手填的 cookie / UA / browser。'},
     {path:'flaresolverr.url',label:'FlareSolverr 地址',type:'text',help:'例如 http://127.0.0.1:8191。',mono:true,placeholder:'http://127.0.0.1:8191'},
-    {path:'flaresolverr.solve_url',label:'挑战页面地址',type:'text',help:'默认使用 https://cursor.com/docs。',mono:true,placeholder:'https://cursor.com/docs'},
+    {path:'flaresolverr.solve_url',label:'挑战页面地址',type:'text',help:'默认使用 https://cursor.com/cn/docs，并将其作为上游请求 referer。',mono:true,placeholder:'https://cursor.com/cn/docs'},
     {path:'flaresolverr.refresh_interval_seconds',label:'刷新间隔（秒）',type:'number',help:'默认 3000 秒。',min:1},
     {path:'flaresolverr.timeout_seconds',label:'单次刷新超时（秒）',type:'number',help:'默认 60 秒。',min:1},
     {path:'flaresolverr.cookie_header',label:'手填 Cookie Header',type:'textarea',help:'明文填写完整 Cookie header。自动刷新成功时会优先使用运行时值；没有运行时值时回退到这里。',mono:true,rows:6,full:true},
